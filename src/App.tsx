@@ -3496,9 +3496,9 @@ function SettingsView({
         <ManagedAccount />
         {settings.serviceMode === "managed" ? (
           <p>
-            Savvy supplies Deepgram Nova-3 transcription and Claude reasoning.
-            Personal provider settings below apply only when you select your own
-            providers.
+            Savvy supplies Deepgram Nova-3 transcription and Fireworks GLM-5.3
+            reasoning. Personal provider settings below apply only when you
+            select your own providers.
           </p>
         ) : null}
         <SettingsGroup title="Live Transcript">

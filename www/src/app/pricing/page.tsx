@@ -25,8 +25,8 @@ export default function Pricing() {
       <h2>Savvy managed</h2>
       <p>Sign in from the same desktop app. Savvy handles transcription and model access.</p>
       <p>
-        Managed prices pay for Deepgram transcription and Claude usage on your behalf, plus
-        Savvy&apos;s margin.
+        Managed prices pay for Deepgram transcription and Fireworks GLM-5.3 usage on your behalf,
+        plus Savvy&apos;s margin.
       </p>
       {Object.entries(catalog).map(([product, offer]) => (
         <section key={product} aria-label={product === "monthly" ? "Monthly plan" : "Hours pack"}>
@@ -55,8 +55,8 @@ export default function Pricing() {
       <p>
         With personal providers, audio and selected context go to your providers. With managed
         assistance, audio passes through Savvy to Deepgram, and selected document evidence and
-        meeting context pass through Savvy to Claude. Your source documents and history stay on your
-        Mac.
+        meeting context pass through Savvy to Fireworks GLM-5.3. Your source documents and history
+        stay on your Mac.
       </p>
       <div className="mt-8">
         <DownloadCTA />
