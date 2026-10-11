@@ -170,10 +170,21 @@ class MonitorTests(unittest.TestCase):
         response.__enter__.return_value = SimpleNamespace(
             status=200, url="https://login.invalid"
         )
-        with patch.object(monitor.urllib.request, "urlopen", return_value=response):
+        with patch.object(
+            monitor.urllib.request, "urlopen", return_value=response
+        ) as opened:
             self.assertFalse(REAL_READY(monitor.PUBLIC_ORIGIN, "/ready", 200))
+            self.assertEqual(
+                opened.call_args.args[0].get_header("User-agent"), "SavvyMonitor/0.1"
+            )
+            self.assertIsNone(opened.call_args.args[0].get_header("Cf-connecting-ip"))
             response.__enter__.return_value.url = monitor.PUBLIC_ORIGIN + "/ready"
             self.assertTrue(REAL_READY(monitor.PUBLIC_ORIGIN, "/ready", 200))
+            response.__enter__.return_value.url = monitor.LOCAL_ORIGIN + "/ready"
+            self.assertTrue(REAL_READY(monitor.LOCAL_ORIGIN, "/ready", 200))
+            self.assertEqual(
+                opened.call_args.args[0].get_header("Cf-connecting-ip"), "127.0.0.1"
+            )
 
 
 if __name__ == "__main__":

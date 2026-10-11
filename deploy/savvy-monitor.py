@@ -35,9 +35,10 @@ def unit(name):
 
 
 def ready(origin, path, expected):
-    request = urllib.request.Request(
-        origin + path, headers={"CF-Connecting-IP": "127.0.0.1"}
-    )
+    headers = {"User-Agent": "SavvyMonitor/0.1"}
+    if origin == LOCAL_ORIGIN:
+        headers["CF-Connecting-IP"] = "127.0.0.1"
+    request = urllib.request.Request(origin + path, headers=headers)
     with urllib.request.urlopen(request, timeout=5) as response:
         # A login/challenge redirect must never count as readiness.
         return response.status == expected and response.url == origin + path
