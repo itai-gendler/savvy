@@ -4773,7 +4773,7 @@ impl CodexAppServer {
             std::env::temp_dir().join(format!("savvy-codex-app-server-{}", Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).map_err(|error| error.to_string())?;
         let mut command = std::process::Command::new(binary);
-        provider_output::limit_files(&mut command);
+        // Bound IPC below; a process-wide file limit also blocks Codex's existing runtime databases.
         let mut child = command
             .args([
                 "app-server",
@@ -5640,7 +5640,6 @@ fn run_codex_json<T: DeserializeOwned>(
     let temp_dir = std::env::temp_dir().join(format!("savvy-codex-{request_id}"));
     create_private_directory(&temp_dir).map_err(|error| error.to_string())?;
     let schema_path = temp_dir.join("schema.json");
-    let output_path = temp_dir.join(format!("savvy-codex-{request_id}.output.json"));
     write_private_file(&schema_path, schema.as_bytes()).map_err(|error| error.to_string())?;
 
     let run = (|| {
@@ -5679,26 +5678,23 @@ fn run_codex_json<T: DeserializeOwned>(
         command
             .arg("--output-schema")
             .arg(&schema_path)
-            .arg("--output-last-message")
-            .arg(&output_path)
             .arg("-")
             .current_dir(&temp_dir)
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        run_provider_process(
+        let output = run_provider_process(
             command,
             prompt,
             "Codex",
             std::time::Duration::from_secs(timeout_seconds),
             cancellation,
         )?;
-        serde_json::from_slice(&provider_output::read_file(&output_path)?)
+        serde_json::from_slice(&output)
             .map_err(|error| format!("Codex returned invalid {result_name}: {error}"))
     })();
 
     let _ = fs::remove_file(schema_path);
-    let _ = fs::remove_file(output_path);
     let _ = fs::remove_dir(temp_dir);
     run
 }
@@ -5964,9 +5960,12 @@ fn run_provider_process(
     provider: &str,
     timeout: std::time::Duration,
     mut cancellation: Option<tokio::sync::watch::Receiver<bool>>,
-) -> Result<(), String> {
-    use tokio::io::AsyncWriteExt;
-    provider_output::limit_files(&mut command);
+) -> Result<Vec<u8>, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // Codex updates shared runtime databases; bound its response pipe instead of every file it opens.
+    if provider != "Codex" {
+        provider_output::limit_files(&mut command);
+    }
     tauri::async_runtime::block_on(async {
         if cancellation.as_ref().is_some_and(|signal| *signal.borrow()) {
             return Err("brief_cancelled: Brief generation was cancelled.".into());
@@ -5978,15 +5977,31 @@ fn run_provider_process(
             .map_err(|error| format!("failed to start {provider}: {error}"))?;
         let operation = async {
             let mut stdin = child.stdin.take().ok_or("provider stdin is unavailable")?;
+            let stdout = child.stdout.take();
             stdin
                 .write_all(prompt.as_bytes())
                 .await
                 .map_err(|error| error.to_string())?;
             drop(stdin);
-            let status = child.wait().await.map_err(|error| error.to_string())?;
+            let read_output = async {
+                let mut output = Vec::new();
+                if let Some(stdout) = stdout {
+                    stdout
+                        .take(provider_output::MAX_OUTPUT_BYTES as u64 + 1)
+                        .read_to_end(&mut output)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    if output.len() > provider_output::MAX_OUTPUT_BYTES {
+                        return Err("Provider output exceeds 4 MiB".to_owned());
+                    }
+                }
+                Ok(output)
+            };
+            let wait = async { child.wait().await.map_err(|error| error.to_string()) };
+            let (status, output) = tokio::try_join!(wait, read_output)?;
             status
                 .success()
-                .then_some(())
+                .then_some(output)
                 .ok_or_else(|| format!("{provider} exited with {status}"))
         };
         let cancelled = async {
@@ -7817,6 +7832,41 @@ mod one_shot_provider_tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         command
+    }
+
+    #[test]
+    fn codex_response_pipe_is_bounded_without_limiting_shared_runtime_files() {
+        let directory = std::env::temp_dir().join(format!("savvy-codex-output-{}", Uuid::new_v4()));
+        create_private_directory(&directory).unwrap();
+        let cache = directory.join("runtime.db");
+        let mut command = fake(
+            "import sys; sys.stdin.read(); open(sys.argv[1],'wb').write(b'x'*(5*1024*1024)); print('{\"ok\":true}')",
+            &cache,
+        );
+        command.stdout(Stdio::piped());
+        let output =
+            run_provider_process(command, "fixture", "Codex", Duration::from_secs(10), None)
+                .unwrap();
+        assert_eq!(output, b"{\"ok\":true}\n");
+        assert_eq!(fs::metadata(&cache).unwrap().len(), 5 * 1024 * 1024);
+
+        let pid = directory.join("child.pid");
+        let mut command = fake(
+            "import os,sys,time; sys.stdin.read(); open(sys.argv[1],'w').write(str(os.getpid())); sys.stdout.buffer.write(b'x'*(5*1024*1024)); sys.stdout.flush(); time.sleep(30)",
+            &pid,
+        );
+        command.stdout(Stdio::piped());
+        let error =
+            run_provider_process(command, "fixture", "Codex", Duration::from_secs(10), None)
+                .unwrap_err();
+        assert_eq!(error, "Provider output exceeds 4 MiB");
+        assert!(!Command::new("/bin/kill")
+            .args(["-0", fs::read_to_string(&pid).unwrap().trim()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
