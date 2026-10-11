@@ -1,6 +1,11 @@
 # Managed service acceptance
 
 Record the candidate commit, desktop version, date, runtime and host for each run.
+The accepted desktop host is this Mac, `MacBookPro-de-jaume`, as instructed on
+2026-10-11. Perform all remaining installed staging, dashboard, release and
+production-client checks here. The backend remains on Epistoma. Existing local
+native results count for the assertions they prove; complete their uncovered
+assertions and repeat affected cases after relevant changes or failures.
 Write results to `target/managed-acceptance/report.md`: scenario, PASS/FAIL/BLOCKED,
 observed result, redacted event/account IDs, timing and evidence path. Empty results
 remain NOT RUN. Never include keys, OTPs, callback codes, access/refresh tokens,
@@ -16,22 +21,44 @@ private signing material, source documents or customer audio in public evidence.
   Fireworks GLM-5.3 and Deepgram must be real. Stripe and purchases must be test mode.
   No unmetered mode or development HTTP grant endpoint. Restrict the staging host
   to current test egress addresses except its signed billing webhook.
-- Installed desktop: `ssh -p 2222 openfort@macbook-pro-de-openfort.tail701c62.ts.net`.
+  Verify local Helium uses the existing Openfort Cloudflare account owned by
+  `developers@openfort.xyz` before updating access; a Bonofici-only session cannot
+  administer this zone. Preserve the other tunnel routes and final catch-all.
+- Installed desktop: this Mac, `MacBookPro-de-jaume`, workspace
+  `/Users/jamalavedra/Projects/savvy`. Remote Mac interactive access is no longer
+  required. Use local Helium/OpenCLI for Google, Stripe and Cloudflare dashboards.
   Build the candidate using `scripts/build-integration-macos.sh` with service URL,
   issuer and audience set to the staging origin and client ID `savvy-desktop-staging`.
-  Back up the production app/data. Install `Savvy Integration.app`, stop the other
-  app, and register the normal OS callback handler. Keep separate integration data.
+  Back up the production app/data before replacement. Reuse a signed probe only
+  when its source/hash matches the candidate; the integration build script emits
+  an ad hoc bundle, so verify the final Developer ID signature separately.
+  Stop other Savvy apps and verify the normal OS callback handler selects the
+  exact final candidate path, not an older bundle with the same identifier.
+  Privately preserve and hash the existing integration data at
+  `/Users/jamalavedra/Library/Application Support/com.alamaslabs.savvy.integration`
+  before launch. Use disposable invented context, recordings and history for tests.
+  Restore the original data with matching hashes after normal quit.
   Restore the production handler after testing. A callback file is not OS delivery.
   After a signing-identity change, verify actual capture even if macOS permission
   switches appear enabled. Stale grants can reference an older code requirement;
   re-authorize the final signed candidate normally and relaunch before audio tests.
+  Obtain action-time consent before granting microphone/system capture access.
+  Verify physical microphone input separately from system playback; headphones
+  playback alone does not establish working microphone capture.
 - Production: separate user, issuer, secret, database pair and live Stripe catalog;
-  port 8788 at `https://api.savvycopilot.com`. Use the signed/notarized draft candidate.
+  port 8788 at `https://api.savvycopilot.com`. Run the signed/notarized draft
+  production candidate on this Mac, preserving existing production app/data.
   Never inject test grants or submit an unrequested live payment. Real supplier smoke
   requires an account with legitimately funded allowance; otherwise record BLOCKED.
 - Preserve the existing tunnel rules. Stage acceptance precedes production rollout;
   production smoke precedes draft publication. Do not count an ad hoc launch as
   notarized release validation or fixture load as live-provider/tunnel acceptance.
+- Credential cleanup: rotate the staging Google secret that appeared in one
+  diagnostic tool result. The owner performs credential rotation in Helium;
+  install its replacement privately on Epistoma, verify real sign-in, then have
+  the owner disable the old secret. Keep credential values and copy-button labels
+  out of snapshots/logs. The full remaining task order is in
+  `plan/infrastructure-managed-service-1.md`, TASK-033 through TASK-041.
 
 ## Automated checks
 
@@ -150,6 +177,8 @@ Observed: pending. Status: NOT RUN. Evidence: pending.
 ### TEST-014
 
 Check email/sign-in, account, pricing, permission, readiness, brief review, meeting, interruption, and sign-out screens at the minimum desktop size in light/dark mode. Confirm keyboard focus, modal Escape/cancel, actionable errors, and no clipped primary actions. Verify audio/transcript retention against disposable data; do not use existing user history as fixtures.
+Client removal and brief unselection must show a confirmation before mutation.
+Cancel and Escape preserve stored data; explicit confirmation preserves source files.
 
 Observed: pending. Status: NOT RUN. Evidence: pending.
 

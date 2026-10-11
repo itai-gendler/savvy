@@ -1371,31 +1371,64 @@ describe("App", () => {
     ).not.toBeInTheDocument();
   }, 15_000);
 
-  it("can remove the brief so a meeting runs with none at all", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockImplementation(() => true);
-    try {
+  it.each(["client", "brief"] as const)(
+    "requires explicit confirmation before removing a %s",
+    async (kind) => {
+      const remove = vi.spyOn(
+        api,
+        kind === "client" ? "removeClientContext" : "removeBrief",
+      );
       render(<App />);
-      // The demo brief belongs to the client scope, so select the client first.
       fireEvent.click(
         await screen.findByRole("button", { name: "Meeting context" }),
       );
       fireEvent.click(await screen.findByRole("option", { name: /Northstar/ }));
-      fireEvent.click(
-        await screen.findByRole("button", { name: "Unselect brief" }),
-      );
-
-      // Removing it must leave the scope with no brief, not fall back to an
-      // earlier version.
-      await waitFor(() => {
-        expect(
-          screen.queryByRole("button", { name: "More brief actions" }),
-        ).not.toBeInTheDocument();
+      if (kind === "client")
+        fireEvent.click(
+          await screen.findByRole("button", { name: "Show documents" }),
+        );
+      const trigger = await screen.findByRole("button", {
+        name: kind === "client" ? "Remove client" : "Unselect brief",
       });
-      expect(confirm).toHaveBeenCalled();
-    } finally {
-      confirm.mockRestore();
-    }
-  }, 15_000);
+      for (const cancel of ["button", "escape"]) {
+        trigger.focus();
+        fireEvent.click(trigger);
+        const dialog = await screen.findByRole("dialog", {
+          name: kind === "client" ? "Remove client?" : "Unselect brief?",
+        });
+        expect(
+          within(dialog).getByRole("button", { name: "Cancel" }),
+        ).toHaveFocus();
+        expect(remove).not.toHaveBeenCalled();
+        if (cancel === "button")
+          fireEvent.click(
+            within(dialog).getByRole("button", { name: "Cancel" }),
+          );
+        else fireEvent(dialog, new Event("cancel", { cancelable: true }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(trigger).toHaveFocus();
+        expect(remove).not.toHaveBeenCalled();
+      }
+      fireEvent.click(trigger);
+      fireEvent.click(
+        within(await screen.findByRole("dialog")).getByRole("button", {
+          name: "Remove",
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(
+        (
+          await api.getPreparationSnapshot(
+            kind === "client" ? null : "demo-client",
+          )
+        ).brief,
+      ).toBeNull();
+    },
+    15_000,
+  );
 
   it.each([false, true])(
     "restores shortcut registration across unmount, resolved=%s",
