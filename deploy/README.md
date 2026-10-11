@@ -117,12 +117,82 @@ fixtures. Stripe-hosted return pages trigger refresh and never prove payment.
 To upgrade, stop the unit, take a backup, point `/opt/savvy/current` at the new
 release, run `node build/migrate.js` and start the unit again. Keep the previous
 release directory until the new one has passed readiness and a sign-in check.
+If scheduled backups are enabled, first stop both `savvy-backup.timer` and
+`savvy-backup.service`, letting the backup's restart callback finish before the
+maintenance stop. Re-enable the timer only after recovery checks pass.
 
 For backups, stop the backend and run
 `pnpm --dir backend backup /path/to/new-private-backup` with its environment loaded.
 The command locks both databases, uses SQLite's backup API, checks integrity and
 writes a manifest with hashes. Protect the two snapshots and the auth secret.
 Restoration steps are in `backend/README.md`.
+
+### Daily production backups
+
+After production identity, billing and installed-app drain acceptance pass, install
+the Savvy-only backup job before opening customer admission:
+
+```sh
+sudo install -d -m 0755 /usr/local/libexec
+sudo install -m 0755 deploy/savvy-backup.sh /usr/local/libexec/savvy-backup
+sudo install -d -o savvy -g savvy -m 0700 /var/backups/savvy
+sudo install -m 0644 deploy/savvy-backup.service deploy/savvy-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start savvy-backup.service
+sudo systemctl status savvy-backup.service --no-pager
+```
+
+The job first requires an active production backend. It records that restart is
+needed, normally drains the backend, and runs the existing compiled backup command
+as `savvy`. `ExecStopPost` restarts the backend after success, failure or process
+termination. A failed restart keeps its root-only marker for recovery; the job
+does not start an intentionally inactive backend. Node reads the protected env
+file without sourcing it into a shell or printing credentials.
+
+Snapshots are new timestamped directories under `/var/backups/savvy`, mode 0700,
+with both SQLite files and the hash/integrity/signing-key manifest mode 0600.
+The matching stable `BETTER_AUTH_SECRET` remains in the separate protected store.
+Keep a protected off-host copy of that secret and both snapshots. On this Mac,
+use a 0700 directory outside Git with FileVault enabled and `umask 077`; SSH can
+stream the selected backup without making the VPS files publicly readable:
+
+```sh
+umask 077
+ssh jaume@epistoma 'sudo tar -C /var/backups/savvy/EXACT_TIMESTAMP -czf - auth.sqlite service.sqlite manifest.json' > savvy-backup.tar.gz
+```
+
+Record the actual off-host destination in the private rollout manifest. Verify
+manifest hashes, SQLite integrity and a private restore with the matching issuer,
+secret and signing identity before enabling the timer. Do not copy staging state
+to production or restore an older ledger over newer payments. To test a restore,
+copy the pair to a new private directory owned by `savvy`, then run the matching
+compiled backend with database paths pointing only to that copy and a loopback
+port that has no public tunnel route:
+
+```sh
+sudo runuser -u savvy -- env \
+  SAVVY_AUTH_DATABASE=/var/lib/savvy-restore/EXACT_TIMESTAMP/auth.sqlite \
+  SAVVY_DB_PATH=/var/lib/savvy-restore/EXACT_TIMESTAMP/service.sqlite \
+  SAVVY_HOST=127.0.0.1 PORT=8790 \
+  /opt/node-v22.23.2-linux-x64/bin/node --env-file=/etc/savvy/backend.env \
+  /opt/savvy/releases/EXACT_MATCHING_SHA/backend/build/server.js
+```
+
+Check `/ready` using `CF-Connecting-IP: 127.0.0.1`, signing key IDs, refresh rotation
+and current payments/allowances/usage/purchases. Stop the clone normally afterward.
+Keep the live DB pair unchanged during the drill. After this gate passes:
+
+```sh
+sudo systemctl enable --now savvy-backup.timer
+sudo systemctl list-timers savvy-backup.timer --all --no-pager
+```
+
+The timer runs at 03:00 UTC and catches missed runs after downtime. Each backup
+briefly interrupts the service; desktop listening must resume explicitly. Monitor
+failed backup/restart units and off-host copy freshness by configuring the Savvy
+monitor before enabling the timer. Inspect failures with `journalctl -u savvy-backup.service`; if the
+backend did not restart, recover it with `systemctl start savvy-backend.service`
+and verify readiness and reservation recovery before reopening access.
 
 Roll back by starting the previous release against a fresh copy of current state,
 so paid usage since the upgrade is kept. Never restore an older snapshot without
