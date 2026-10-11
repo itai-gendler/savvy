@@ -172,6 +172,7 @@ test("audio upgrade rejects unauthorized and stale leases before supplier connec
 });
 
 test("supplier handshake failure delivers typed control and never charges", async (t) => {
+  const warnings = t.mock.method(console, "warn", () => {});
   const h = await fixture(t, true),
     ws = h.connect();
   const message = once(ws, "message");
@@ -185,6 +186,10 @@ test("supplier handshake failure delivers typed control and never charges", asyn
   await closed;
   assert.equal(h.view().settledMs, 0n);
   assert.equal(h.calls(), 1);
+  assert.deepEqual(
+    warnings.mock.calls.map((call) => call.arguments),
+    [["transcription provider unavailable"]],
+  );
 });
 
 test("silent reconnect attempts are durably limited before supplier handshakes", async (t) => {

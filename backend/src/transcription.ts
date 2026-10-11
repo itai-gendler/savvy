@@ -318,6 +318,7 @@ async function relay(
     supplierFailure ||= providerFailed;
     if (stopping) return;
     stopping = true;
+    if (supplierFailure) console.warn("transcription provider unavailable");
     clearInterval(monitor);
     queue.length = 0;
     let abandoned = false;

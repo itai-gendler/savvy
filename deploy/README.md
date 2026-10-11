@@ -199,6 +199,37 @@ so paid usage since the upgrade is kept. Never restore an older snapshot without
 reconciling payments and usage since that snapshot. Reopen purchases only after
 recovering uncertain checkout identities.
 
+### Production monitoring
+
+Install the Savvy-only monitor after the backend and backup units are installed.
+It runs each minute and writes aggregate JSON to the local journal. It checks
+origin and public readiness, backend/backup failures, reservations more than one
+minute past their lease/deadline, pending billing events older than five minutes,
+negative allowances, provider/reconciliation errors in the last five minutes and
+free disk space. It fails below 1 GiB free or 10% free. A running scheduled backup
+suppresses only the expected readiness interruption. Failed/canceled provider
+operations are counted separately; cancellation alone does not trigger a failure.
+
+```sh
+sudo install -m 0644 deploy/savvy-monitor.py /usr/local/libexec/savvy-monitor.py
+sudo install -m 0644 deploy/savvy-monitor.service deploy/savvy-monitor.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start savvy-monitor.service
+sudo journalctl -u savvy-monitor.service -n 5 --no-pager
+sudo systemctl enable --now savvy-monitor.timer
+```
+
+The monitor reads SQLite in read-only mode and never emits identities, event IDs,
+audio, context, credential values or raw supplier error bodies. Its current
+destination is journald on Epistoma; no external message is sent. Record that
+destination and test an unhealthy state before opening admission. Review
+`journalctl -u savvy-monitor.service --since=-24h` during launch observation.
+The local timer cannot detect an unreachable VPS while it is down. Public
+readiness must also be observed every minute from a separate machine during the
+24-hour launch gate, and an existing external monitor should be connected before
+leaving production unattended. A failed monitor does not stop or restart the
+backend automatically.
+
 ## Acceptance still required
 
 Follow [`backend/e2e/managed-acceptance.md`](../backend/e2e/managed-acceptance.md)

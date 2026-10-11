@@ -71,16 +71,9 @@ export async function post(
       },
     );
     if (!response.ok) {
-      const detail = await response
-        .json()
-        .then((value: { error?: { type?: unknown; message?: unknown } }) =>
-          [value.error?.type, value.error?.message]
-            .filter((part) => typeof part === "string")
-            .join(": ")
-            .slice(0, 300),
-        )
-        .catch(() => "");
-      console.error(`reasoning provider returned ${response.status}`, detail);
+      // Supplier error bodies can echo customer context or credentials.
+      console.error(`reasoning provider returned ${response.status}`);
+      await response.body?.cancel().catch(() => {});
       // A rejected request shape fails only this caller; it must not trip the
       // shared circuit breaker that pauses every account.
       if ([400, 413, 422].includes(response.status))

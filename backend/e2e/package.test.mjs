@@ -23,6 +23,12 @@ import { randomBytes, createHash } from "node:crypto";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const run = promisify(execFile);
 
+test("production monitoring checks read-only metadata and failure handling", async () => {
+  await run("python3", ["-B", join(root, "deploy/savvy-monitor.test.py")], {
+    timeout: 10000,
+  });
+});
+
 test("scheduled backup recovers failures without starting an inactive backend", async (t) => {
   const script = join(root, "deploy/savvy-backup.sh");
   for (const scenario of [

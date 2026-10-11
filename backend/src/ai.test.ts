@@ -15,6 +15,41 @@ import { reconcile } from "./stripe.js";
 import { completeRequest } from "./advice.js";
 import { checkInput, generate, requestBody } from "./ai.js";
 
+test("provider failure logs contain only the HTTP status", async (t) => {
+  const h = await fixture(t, { env: { SAVVY_FIREWORKS_API_KEY: "synthetic" } });
+  const errors = t.mock.method(console, "error", () => {});
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            type: "private-type",
+            message: "private-context synthetic-key",
+          },
+        }),
+        { status: 401 },
+      ),
+  );
+  await assert.rejects(
+    generate(
+      h.state,
+      requestBody(h.state, "invented", contracts.adviceSchema),
+      1024,
+      1n,
+      "private-log",
+      new AbortController().signal,
+    ),
+    (error: unknown) =>
+      error instanceof ApiError && error.code === "provider_unavailable",
+  );
+  assert.deepEqual(
+    errors.mock.calls.map((call) => call.arguments),
+    [["reasoning provider returned 401"]],
+  );
+});
+
 test("Fireworks uses Messages without count_tokens or fallbacks and accounts for cached input", async (t) => {
   const h = await fixture(t, { env: { SAVVY_FIREWORKS_API_KEY: "synthetic" } });
   const response = await h.post("/v1/briefs", {
