@@ -98,6 +98,35 @@ describe("App", () => {
     window.history.replaceState({}, "", "/");
   });
 
+  it("shows managed assistance instead of a personal-provider model selector", async () => {
+    const settings = await api.getAppSettings();
+    await api.updateAppSettings({
+      ...settings,
+      serviceMode: "managed",
+      onboardingCompleted: true,
+    });
+    const view = render(<App />);
+    await waitFor(() =>
+      expect(view.container.querySelector(".app-footer")).toHaveTextContent(
+        "Savvy assistance",
+      ),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Reasoning model" }),
+    ).not.toBeInTheDocument();
+    view.unmount();
+
+    await api.updateAppSettings({
+      ...settings,
+      serviceMode: "byok",
+      onboardingCompleted: true,
+    });
+    render(<App />);
+    expect(
+      await screen.findByRole("button", { name: "Reasoning model" }),
+    ).toHaveTextContent("GPT-5.6 Sol");
+  });
+
   it.each([false, true])(
     "recovers dashboard initialization in overlay=%s",
     async (overlay) => {

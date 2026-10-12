@@ -4389,6 +4389,10 @@ function AppFooter({
         <span className="model-state">
           <i /> {activity}
         </span>
+      ) : settings?.serviceMode === "managed" ? (
+        <span className="model-state">
+          <i /> Savvy assistance
+        </span>
       ) : settings ? (
         <Dropdown
           compact
