@@ -239,10 +239,23 @@ struct RecommendationWork {
     active: Option<GenerationToken>,
     latest: Option<(PendingGeneration, String)>,
     cancellation: Option<tauri::async_runtime::JoinHandle<()>>,
+    managed_not_before: Option<tokio::time::Instant>,
 }
 
 #[cfg(target_os = "macos")]
 impl RecommendationWork {
+    fn next_start(&self, earliest: tokio::time::Instant) -> tokio::time::Instant {
+        if self
+            .latest
+            .as_ref()
+            .is_some_and(|(_, provider)| provider == "managed")
+        {
+            earliest.max(self.managed_not_before.unwrap_or(earliest))
+        } else {
+            earliest
+        }
+    }
+
     fn enqueue(&mut self, pending: PendingGeneration, provider: String) -> bool {
         self.latest = Some((pending, provider));
         let start_worker = !self.running;
@@ -4082,11 +4095,27 @@ fn spawn_managed_stream(
                     }
                 }
             });
+            let (connected, connection_ready) = tokio::sync::oneshot::channel();
+            let recovery_app = app.clone();
+            let recovery_session = stream.session_id;
+            refresh_tasks.spawn(async move {
+                if connection_ready.await.is_ok() {
+                    let label = match source {
+                        AudioSource::Microphone => "microphone",
+                        AudioSource::System => "system audio",
+                    };
+                    let _ = recovery_app.emit("meeting://stream-recovered", serde_json::json!({
+                        "sessionId": recovery_session,
+                        "message": format!("Live {label} transcription interrupted; reconnecting."),
+                    }));
+                }
+            });
             let result = savvy_transcription::stream_managed_transcription(
                 &url,
                 &stream.session_id.to_string(),
                 &token,
                 Some(token_updates),
+                Some(connected),
                 &stream.language,
                 session.lease_version,
                 frames.clone(),
@@ -5224,23 +5253,37 @@ fn spawn_provider_enhancement(app: AppHandle, pending: PendingGeneration, provid
         let mut next_start = tokio::time::Instant::now();
         loop {
             // Coalesce bursts during the gap instead of allocating a task per turn.
+            next_start = RECOMMENDATION_WORK
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .next_start(next_start);
             tokio::time::sleep_until(next_start).await;
             let next = {
                 let mut work = RECOMMENDATION_WORK
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
+                let now = tokio::time::Instant::now();
+                if work.next_start(now) > now {
+                    continue;
+                }
                 work.next()
             };
             let Some((pending, provider)) = next else {
                 return;
             };
             next_start = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+            let managed = provider == "managed";
             run_provider_enhancement(app.clone(), pending, provider).await;
             let cancellation = {
                 let mut work = RECOMMENDATION_WORK
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
                 work.active = None;
+                if managed {
+                    // The service requires five seconds between advice requests; retain the gap across worker restarts.
+                    work.managed_not_before =
+                        Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+                }
                 work.cancellation.take()
             };
             if let Some(cancellation) = cancellation {
@@ -6780,7 +6823,19 @@ mod tests {
         assert_eq!(latest.token.generation_id, 10_000);
         assert!(work.next().is_none());
         assert!(!work.running && work.active.is_none());
+        let now = tokio::time::Instant::now();
+        let managed_deadline = now + std::time::Duration::from_secs(5);
+        work.managed_not_before = Some(managed_deadline);
+        assert!(work.enqueue(pending(10_001), "managed".into()));
+        assert_eq!(work.next_start(now), managed_deadline);
+        assert_eq!(
+            work.next_start(managed_deadline + std::time::Duration::from_secs(1)),
+            managed_deadline + std::time::Duration::from_secs(1)
+        );
+        work.next();
+        assert!(work.next().is_none());
         assert!(work.enqueue(pending(10_001), "codex".into()));
+        assert_eq!(work.next_start(now), now);
         assert_eq!(work.next().unwrap().0.token.generation_id, 10_001);
     }
 

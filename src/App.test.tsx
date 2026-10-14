@@ -670,6 +670,56 @@ describe("App", () => {
     view.unmount();
   });
 
+  it("clears only the recovered stream warning for the current meeting", async () => {
+    const snapshot = await api.getDashboard();
+    const settings = await api.getAppSettings();
+    const preparation = await api.getPreparationSnapshot(null);
+    const session = await api.startMeeting(null, null);
+    vi.spyOn(api, "getDashboard").mockResolvedValue(snapshot);
+    vi.spyOn(api, "getAppSettings").mockResolvedValue(settings);
+    vi.spyOn(api, "getAppStatus").mockResolvedValue({
+      version: "0.1.3",
+      platform: "macos",
+    });
+    vi.spyOn(api, "getPreparationSnapshot").mockResolvedValue(preparation);
+    vi.spyOn(api, "getAudioLevel").mockResolvedValue(0);
+    vi.mocked(listen).mockClear().mockResolvedValue(vi.fn());
+    window.__TAURI_INTERNALS__ = {};
+    render(<App />);
+    await waitFor(() =>
+      expect(listen).toHaveBeenCalledWith(
+        "meeting://stream-recovered",
+        expect.any(Function),
+      ),
+    );
+    const emit = (name: string, payload: unknown) =>
+      act(() => {
+        const handler = vi
+          .mocked(listen)
+          .mock.calls.find(([event]) => event === name)![1];
+        handler({ event: name, id: 1, payload });
+      });
+    const message = "Live microphone transcription interrupted; reconnecting.";
+    emit("meeting://session", session);
+    emit("meeting://provider-error", message);
+    expect(screen.getByText(message)).toBeVisible();
+    emit("meeting://stream-recovered", {
+      sessionId: "previous-meeting",
+      message,
+    });
+    expect(screen.getByText(message)).toBeVisible();
+    emit("meeting://stream-recovered", {
+      sessionId: session.id,
+      message: "Live system audio transcription interrupted; reconnecting.",
+    });
+    expect(screen.getByText(message)).toBeVisible();
+    emit("meeting://stream-recovered", { sessionId: session.id, message });
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+    emit("meeting://capture-error", "Microphone disconnected");
+    emit("meeting://stream-recovered", { sessionId: session.id, message });
+    expect(screen.getByText("Microphone disconnected")).toBeVisible();
+  });
+
   it("bounds microphone polling and stops it on visibility changes, pause, and unmount", async () => {
     const session = await api.startMeeting(null, null);
     const props = {

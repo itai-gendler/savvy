@@ -498,6 +498,16 @@ function App() {
           listen<string>("meeting://provider-error", (event) =>
             setError(event.payload),
           ),
+          listen<{ sessionId: string; message: string }>(
+            "meeting://stream-recovered",
+            ({ payload }) => {
+              if (payload.sessionId === visibleSessionRef.current) {
+                setError((current) =>
+                  current === payload.message ? null : current,
+                );
+              }
+            },
+          ),
           ...(overlayWindow
             ? []
             : [

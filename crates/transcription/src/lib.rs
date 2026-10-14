@@ -619,6 +619,7 @@ pub async fn stream_managed_transcription(
     session_id: &str,
     access_token: &str,
     mut token_updates: Option<watch::Receiver<Result<String, String>>>,
+    connected: Option<tokio::sync::oneshot::Sender<()>>,
     language: &str,
     lease_version: u64,
     frames: Receiver<AudioFrame>,
@@ -664,6 +665,9 @@ pub async fn stream_managed_transcription(
             }
             TranscriptionError::Failed("provider_unavailable: Savvy connection failed".into())
         })?;
+    if let Some(connected) = connected {
+        let _ = connected.send(());
+    }
     let (mut writer, mut reader) = socket.split();
     let connection_epoch = STREAM_EPOCH.elapsed().as_millis() as u64;
     let mut incoming = (Instant::now(), 0);
@@ -1050,6 +1054,41 @@ pub fn resample_linear(samples: &[f32], source_rate: u32, target_rate: u32) -> V
 mod tests {
 
     #[tokio::test]
+    async fn rejected_managed_handshake_does_not_report_recovery() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let (connected, connection_ready) = tokio::sync::oneshot::channel();
+        let (_frames, frames) = flume::bounded(1);
+        let (_stop, stop) = tokio::sync::watch::channel(false);
+        let (transcripts, _) = tokio::sync::mpsc::channel(1);
+        let result = super::stream_managed_transcription(
+            &format!("http://{address}"),
+            "test-session",
+            "test-token",
+            None,
+            Some(connected),
+            "en",
+            1,
+            frames,
+            stop,
+            transcripts,
+            super::AudioSource::Microphone,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(connection_ready.await.is_err());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn managed_credentials_rotate_on_the_existing_audio_socket() {
         use futures_util::StreamExt;
         struct Diagnostics(std::sync::Mutex<Vec<String>>);
@@ -1093,12 +1132,14 @@ mod tests {
         let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         let (tokens, updates) = tokio::sync::watch::channel(Ok("initial-test-token".to_owned()));
         let (transcripts, _) = tokio::sync::mpsc::channel(4);
+        let (connected, connection_ready) = tokio::sync::oneshot::channel();
         let client = tokio::spawn(async move {
             super::stream_managed_transcription(
                 &format!("http://{address}"),
                 "00000000-0000-4000-8000-000000000005",
                 "initial-test-token",
                 Some(updates),
+                Some(connected),
                 "en",
                 1,
                 frames_rx,
@@ -1109,6 +1150,10 @@ mod tests {
             .await
         });
         ready_rx.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), connection_ready)
+            .await
+            .unwrap()
+            .unwrap();
         tokens.send(Ok("renewed-test-token".into())).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(1), auth_rx)
             .await
@@ -1182,6 +1227,7 @@ mod tests {
                 "00000000-0000-4000-8000-000000000001",
                 "test-token",
                 None,
+                None,
                 "en",
                 1,
                 frames_rx,
@@ -1253,6 +1299,7 @@ mod tests {
                     &format!("http://{address}"),
                     "00000000-0000-4000-8000-000000000001",
                     "synthetic-access-token",
+                    None,
                     None,
                     "en",
                     1,
