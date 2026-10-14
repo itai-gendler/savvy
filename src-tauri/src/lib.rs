@@ -4179,7 +4179,6 @@ fn is_terminal_managed_failure(message: &str) -> bool {
     .any(|code| message.contains(code))
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn managed_stream_message(message: &str, label: &str) -> String {
     if message.contains("quota_exhausted") {
         "Savvy assistance paused: your included time ran out. Add time, then explicitly resume the meeting.".to_owned()
