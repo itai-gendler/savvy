@@ -372,6 +372,9 @@ test("idle and disabled accounts close supplier work without charging a silent t
     assert.equal(diagnostic.sessionId, ID);
     assert.equal(diagnostic.supplierFailure, false);
     assert.equal(diagnostic.lastDeliveredAgeMs, disabled ? 0 : 5000);
+    assert.equal(diagnostic.lastReceivedAgeMs, disabled ? 0 : 5000);
+    assert.equal(diagnostic.receivedBytes, 640);
+    assert.equal(diagnostic.deliveredBytes, 640);
     assert.deepEqual(
       Object.keys(diagnostic).sort(),
       [
@@ -381,6 +384,9 @@ test("idle and disabled accounts close supplier work without charging a silent t
         "sessionId",
         "supplierFailure",
         "lastDeliveredAgeMs",
+        "lastReceivedAgeMs",
+        "receivedBytes",
+        "deliveredBytes",
         "tokenRemainingMs",
         "queuedBytes",
         "outputBytes",

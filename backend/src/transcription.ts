@@ -297,6 +297,9 @@ async function relay(
   let clientCloseCode: number | null = null;
   let supplierCloseCode: number | null = null;
   let lastDelivered = state.clock();
+  let lastReceived: bigint | null = null;
+  let receivedBytes = 0;
+  let deliveredBytes = 0;
   let pumpTask = Promise.resolve();
   const queue: Buffer[] = [];
   const writes = new Set<Promise<void>>();
@@ -331,6 +334,10 @@ async function relay(
         sessionId: session.local_session_id,
         supplierFailure,
         lastDeliveredAgeMs: Number(state.clock() - lastDelivered),
+        lastReceivedAgeMs:
+          lastReceived === null ? null : Number(state.clock() - lastReceived),
+        receivedBytes,
+        deliveredBytes,
         tokenRemainingMs: Number(tokenExpiry - state.clock()),
         queuedBytes,
         outputBytes,
@@ -432,6 +439,7 @@ async function relay(
           { version: session.lease_version, generation },
         );
         lastDelivered = state.clock();
+        deliveredBytes += chunk.length;
         if (outcome === "exhausted") {
           await send(
             client,
@@ -515,6 +523,8 @@ async function relay(
       return;
     }
     queuedBytes += chunk.length;
+    receivedBytes += chunk.length;
+    lastReceived = state.clock();
     queue.push(chunk);
     startPump();
   });
