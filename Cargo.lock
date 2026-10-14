@@ -4202,6 +4202,7 @@ version = "0.1.0"
 dependencies = [
  "flume",
  "futures-util",
+ "log",
  "savvy-audio",
  "savvy-domain",
  "serde_json",

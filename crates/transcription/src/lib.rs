@@ -673,6 +673,13 @@ pub async fn stream_managed_transcription(
     let mut pacing = tokio::time::interval(Duration::from_millis(50));
     pacing.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    let started = Instant::now();
+    let mut captured_frames = 0_u64;
+    let mut sent_chunks = 0_u64;
+    let mut discarded_bytes = 0_usize;
+    let mut last_frame = None;
+    let mut last_write = None;
+    let result = async {
     loop {
         tokio::select! {
             changed = async {
@@ -698,9 +705,11 @@ pub async fn stream_managed_transcription(
             }
             frame = frames.recv_async() => {
                 let frame = frame.map_err(|_| TranscriptionError::Failed("capture stream ended".into()))?;
+                captured_frames += 1;
+                last_frame = Some(Instant::now());
                 let pcm=frame_to_pcm16(&frame);
-                if pcm.len()>32_000 {continue;}
-                if audio_buffer.len()+pcm.len()>32_000 {audio_buffer.clear();}
+                if pcm.len()>32_000 {discarded_bytes += pcm.len(); continue;}
+                if audio_buffer.len()+pcm.len()>32_000 {discarded_bytes += audio_buffer.len(); audio_buffer.clear();}
                 audio_buffer.extend(pcm);
             }
             _ = pacing.tick() => {
@@ -708,7 +717,7 @@ pub async fn stream_managed_transcription(
                     tokio::select! {
                         result=tokio::time::timeout(Duration::from_secs(2),writer.send(Message::Binary(chunk.into())))=>{
                             match result {
-                                Ok(Ok(())) => {},
+                                Ok(Ok(())) => {sent_chunks += 1; last_write = Some(Instant::now());},
                                 Ok(Err(_)) => return Err(TranscriptionError::Failed("provider_unavailable: audio socket closed".into())),
                                 Err(_) => return Err(TranscriptionError::Failed("provider_unavailable: audio write timed out".into())),
                             }
@@ -752,6 +761,26 @@ pub async fn stream_managed_transcription(
             }
         }
     }
+    }.await;
+    // Only timing and counts: never log tokens, URLs, audio, or supplier text.
+    log::info!(
+        "{}",
+        serde_json::json!({
+            "event": "managed_audio_closed",
+            "sessionId": session_id,
+            "source": source_name,
+            "leaseVersion": lease_version,
+            "failed": result.is_err(),
+            "elapsedMs": started.elapsed().as_millis(),
+            "capturedFrames": captured_frames,
+            "sentChunks": sent_chunks,
+            "discardedBytes": discarded_bytes,
+            "bufferedBytes": audio_buffer.len(),
+            "lastFrameAgeMs": last_frame.map(|at| at.elapsed().as_millis()),
+            "lastWriteAgeMs": last_write.map(|at| at.elapsed().as_millis()),
+        })
+    );
+    result
 }
 
 /// Relay control frames carry a typed reason such as `quota_exhausted`.
@@ -1023,6 +1052,21 @@ mod tests {
     #[tokio::test]
     async fn managed_credentials_rotate_on_the_existing_audio_socket() {
         use futures_util::StreamExt;
+        struct Diagnostics(std::sync::Mutex<Vec<String>>);
+        impl log::Log for Diagnostics {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                if record.target() == "savvy_transcription" {
+                    self.0.lock().unwrap().push(record.args().to_string());
+                }
+            }
+            fn flush(&self) {}
+        }
+        static DIAGNOSTICS: Diagnostics = Diagnostics(std::sync::Mutex::new(Vec::new()));
+        log::set_logger(&DIAGNOSTICS).unwrap();
+        log::set_max_level(log::LevelFilter::Info);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
@@ -1046,13 +1090,13 @@ mod tests {
             std::future::pending::<()>().await;
         });
         let (frames_tx, frames_rx) = flume::bounded(2);
-        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         let (tokens, updates) = tokio::sync::watch::channel(Ok("initial-test-token".to_owned()));
         let (transcripts, _) = tokio::sync::mpsc::channel(4);
         let client = tokio::spawn(async move {
             super::stream_managed_transcription(
                 &format!("http://{address}"),
-                "00000000-0000-4000-8000-000000000001",
+                "00000000-0000-4000-8000-000000000005",
                 "initial-test-token",
                 Some(updates),
                 "en",
@@ -1083,12 +1127,29 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        stop_tx.send(true).unwrap();
+        // Abrupt relay loss must still emit safe capture/write diagnostics.
+        server.abort();
         tokio::time::timeout(std::time::Duration::from_secs(1), client)
             .await
             .unwrap()
             .unwrap()
+            .unwrap_err();
+        let logs = DIAGNOSTICS.0.lock().unwrap();
+        let diagnostic = logs
+            .iter()
+            .find(|line| line.contains("00000000-0000-4000-8000-000000000005"))
             .unwrap();
+        assert!(!diagnostic.contains("test-token"));
+        assert!(!diagnostic.contains(&address.to_string()));
+        let value: serde_json::Value = serde_json::from_str(diagnostic).unwrap();
+        assert_eq!(value["capturedFrames"], 1);
+        assert_eq!(value["sentChunks"], 1);
+        assert_eq!(value["discardedBytes"], 0);
+        assert_eq!(value["bufferedBytes"], 0);
+        assert_eq!(value["failed"], true);
+        assert!(value["lastFrameAgeMs"].is_number());
+        assert!(value["lastWriteAgeMs"].is_number());
+        assert_eq!(value.as_object().unwrap().len(), 12);
         server.abort();
     }
 
