@@ -288,6 +288,8 @@ test("two sources share coverage, superseded connections close, and pause preven
 });
 
 test("supplier loss absorbs uncheckpointed time while explicit drain settles observed audio", async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, "info", (line: string) => logs.push(line));
   for (const drain of [false, true]) {
     const h = await fixture(t),
       ws = h.connect();
@@ -302,6 +304,12 @@ test("supplier loss absorbs uncheckpointed time while explicit drain settles obs
     } else for (const socket of h.supplierSockets.clients) socket.terminate();
     await closed;
     assert.equal(h.view().settledMs, drain ? 20n : 0n);
+    const diagnostic = JSON.parse(logs.at(-1)!);
+    assert.equal(
+      diagnostic.reason,
+      drain ? "client_closed" : "supplier_closed",
+    );
+    assert.equal(diagnostic.supplierFailure, !drain);
   }
 });
 
@@ -339,6 +347,8 @@ test("upstream language selection fixes the supplier model and replaces caller q
 });
 
 test("idle and disabled accounts close supplier work without charging a silent tail", async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, "info", (line: string) => logs.push(line));
   for (const disabled of [false, true]) {
     const h = await fixture(t),
       ws = h.connect();
@@ -353,6 +363,35 @@ test("idle and disabled accounts close supplier work without charging a silent t
     await waitFor(() => h.supplierSockets.clients.size === 0);
     assert.equal(h.view().settledMs, 20n);
     assert.equal(h.view().state, "paused");
+    const diagnostic = JSON.parse(logs.at(-1)!);
+    assert.equal(diagnostic.event, "audio_closed");
+    assert.equal(
+      diagnostic.reason,
+      disabled ? "account_disabled" : "audio_idle",
+    );
+    assert.equal(diagnostic.sessionId, ID);
+    assert.equal(diagnostic.supplierFailure, false);
+    assert.equal(diagnostic.lastDeliveredAgeMs, disabled ? 0 : 5000);
+    assert.deepEqual(
+      Object.keys(diagnostic).sort(),
+      [
+        "event",
+        "source",
+        "reason",
+        "sessionId",
+        "supplierFailure",
+        "lastDeliveredAgeMs",
+        "tokenRemainingMs",
+        "queuedBytes",
+        "outputBytes",
+        "clientState",
+        "upstreamState",
+        "clientCloseCode",
+        "supplierCloseCode",
+      ].sort(),
+    );
+    assert.ok(!logs.join(" ").includes("Synthetic transcript"));
+    assert.ok(!logs.join(" ").includes("Bearer"));
   }
 });
 
