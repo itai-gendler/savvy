@@ -565,3 +565,47 @@ test("network-bunched audio is paced before reaching the supplier", async (t) =>
   assert.equal(h.forwarded(), 32_000);
   assert.equal(h.view().state, "active");
 });
+
+test("a delayed audio burst survives the old one-second queue limit and settles only delivered audio", async (t) => {
+  const h = await fixture(t),
+    ws = h.connect();
+  await once(ws, "open");
+  const ready = once(ws, "message");
+  ws.send(Buffer.alloc(640));
+  await ready;
+  h.advance(20n);
+  let received = 0;
+  ws.on("message", () => {
+    received++;
+    h.advance(50n);
+  });
+  const started = performance.now();
+  for (let i = 0; i < 30; i++) ws.send(Buffer.alloc(1600));
+  await waitFor(() => received === 30);
+  assert.ok(performance.now() - started >= 1400);
+  assert.equal(ws.readyState, WebSocket.OPEN);
+  assert.equal(h.forwarded(), 48_640);
+  const closed = once(ws, "close");
+  ws.close();
+  await closed;
+  await waitFor(() => h.view().state === "paused");
+  assert.equal(h.view().settledMs, 1520n);
+  assert.equal(balance(h.db, 1n, h.state.clock()).meetingMsReserved, 0n);
+});
+
+test("audio frame and five-second queue limits still reject oversized input", async (t) => {
+  for (const oversizedFrame of [false, true]) {
+    const h = await fixture(t),
+      ws = h.connect();
+    await once(ws, "open");
+    const ready = once(ws, "message");
+    ws.send(Buffer.alloc(640));
+    await ready;
+    if (oversizedFrame) ws.send(Buffer.alloc(32_002));
+    else for (let i = 0; i < 101; i++) ws.send(Buffer.alloc(1600));
+    await waitFor(() => ws.readyState === WebSocket.CLOSED);
+    await waitFor(() => h.view().state === "paused");
+    assert.equal(balance(h.db, 1n, h.state.clock()).meetingMsReserved, 0n);
+    assert.ok(h.view().settledMs <= BigInt(h.forwarded() / 32));
+  }
+});

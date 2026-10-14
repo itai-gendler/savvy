@@ -22,6 +22,8 @@ import {
 } from "./sessions.js";
 
 const MAX_AUDIO = 32_000;
+// A network stall shorter than the idle timeout can bunch up paced audio.
+const MAX_QUEUED_AUDIO = Number(AUDIO_IDLE_MS) * 32;
 const MAX_TRANSCRIPT = 1_048_576;
 const LANGUAGES = new Set([
   "multi",
@@ -506,7 +508,8 @@ async function relay(
       !chunk.length ||
       chunk.length % 2 ||
       chunk.length > MAX_AUDIO ||
-      queuedBytes + chunk.length > MAX_AUDIO
+      queuedBytes + chunk.length >
+        (upstreamOpened ? MAX_QUEUED_AUDIO : MAX_AUDIO)
     ) {
       void finish("invalid_or_overflowing_audio");
       return;
