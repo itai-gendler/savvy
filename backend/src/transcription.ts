@@ -365,12 +365,18 @@ async function relay(
     await Promise.all([close(client), ...(upstream ? [close(upstream)] : [])]);
     finishResolve();
   };
+  let nextDelivery = 0;
   const pump = async () => {
     if (pumping || stopping || upstream?.readyState !== WebSocket.OPEN) return;
     pumping = true;
     try {
       while (queue.length && !stopping) {
         const chunk = queue.shift()!;
+        // Network buffering can bunch up correctly paced client frames.
+        const delay = Math.ceil(nextDelivery - performance.now());
+        if (delay > 0)
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        if (stopping) break;
         state.requireAssistance();
         if (state.clock() >= tokenExpiry || !valid()) break;
         checkAudio(
@@ -382,6 +388,8 @@ async function relay(
           state.clock(),
         );
         try {
+          nextDelivery =
+            Math.max(nextDelivery, performance.now() - 50) + chunk.length / 32;
           await send(upstream, chunk, MAX_AUDIO);
         } catch {
           supplierFailure = true;
@@ -423,8 +431,51 @@ async function relay(
       void pumpTask.catch(() => finish(supplierFailure));
     }
   };
+  let refreshing = false;
+  let lastRefresh = state.clock() - 5000n;
   client.on("message", (data, binary) => {
-    if (stopping || !binary) return;
+    if (stopping) return;
+    if (!binary) {
+      if (
+        refreshing ||
+        state.clock() - lastRefresh < 5000n ||
+        bytes(data).length > 8192
+      ) {
+        void finish();
+        return;
+      }
+      lastRefresh = state.clock();
+      refreshing = true;
+      void (async () => {
+        try {
+          const message = JSON.parse(bytes(data).toString());
+          if (message.type !== "SavvyAuth" || typeof message.token !== "string")
+            throw new Error("invalid audio authorization");
+          const identity = await state.authorize({
+            authorization: `Bearer ${message.token}`,
+          });
+          if (
+            stopping ||
+            identity.accountId !== session.account_id ||
+            identity.expiresAtMs <= state.clock() ||
+            !valid()
+          )
+            throw new Error("invalid audio authorization");
+          tokenExpiry = identity.expiresAtMs;
+          await send(client, '{"type":"SavvyAuthOk"}', MAX_TRANSCRIPT);
+        } catch {
+          await send(
+            client,
+            '{"type":"SavvyControl","reason":"sign_in_required"}',
+            MAX_TRANSCRIPT,
+          ).catch(() => {});
+          void finish();
+        } finally {
+          refreshing = false;
+        }
+      })();
+      return;
+    }
     const chunk = bytes(data);
     if (
       !chunk.length ||

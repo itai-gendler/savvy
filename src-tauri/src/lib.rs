@@ -4040,7 +4040,7 @@ fn spawn_managed_stream(
                 Err(error) => {
                     let terminal = is_terminal_managed_failure(&error);
                     if terminal {
-                        pause_managed_assistance(app.clone(), stream.session_id);
+                        finish_managed_failure(app.clone(), stream.session_id, &error);
                     }
                     let _ = app.emit(
                         "meeting://provider-error",
@@ -4056,10 +4056,37 @@ fn spawn_managed_stream(
                     continue;
                 }
             };
+            let (token_sender, token_updates) = tokio::sync::watch::channel(Ok(token.clone()));
+            let mut refresh_tasks = tokio::task::JoinSet::new();
+            refresh_tasks.spawn(async move {
+                let mut last_token = token_sender.borrow().as_ref().unwrap().clone();
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    let refreshed =
+                        tauri::async_runtime::spawn_blocking(managed::relay_credentials)
+                            .await
+                            .map_err(|error| error.to_string())
+                            .and_then(|result| result);
+                    match refreshed {
+                        Ok((_, next)) if next != last_token => {
+                            last_token = next.clone();
+                            if token_sender.send(Ok(next)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) if is_terminal_managed_failure(&error) => {
+                            let _ = token_sender.send(Err(error));
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            });
             let result = savvy_transcription::stream_managed_transcription(
                 &url,
                 &stream.session_id.to_string(),
                 &token,
+                Some(token_updates),
                 &stream.language,
                 session.lease_version,
                 frames.clone(),
@@ -4068,6 +4095,7 @@ fn spawn_managed_stream(
                 source,
             )
             .await;
+            drop(refresh_tasks);
             let Err(error) = result else {
                 break;
             };
@@ -4080,7 +4108,7 @@ fn spawn_managed_stream(
                 AudioSource::System => "system audio",
             };
             if is_terminal_managed_failure(&message) {
-                pause_managed_assistance(app.clone(), stream.session_id);
+                finish_managed_failure(app.clone(), stream.session_id, &message);
                 log::warn!("{label} managed transcription stopped: {message}");
                 let _ = app.emit(
                     "meeting://provider-error",
@@ -4104,6 +4132,17 @@ fn spawn_managed_stream(
             }
         }
     });
+}
+
+#[cfg(target_os = "macos")]
+fn finish_managed_failure(app: AppHandle, id: Uuid, message: &str) {
+    if message.contains("session_ended") {
+        tauri::async_runtime::spawn_blocking(move || {
+            let _ = run_app_operation(&app, |app, state| stop_live_meeting(app, state, id));
+        });
+    } else {
+        pause_managed_assistance(app, id);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -4132,6 +4171,7 @@ fn is_terminal_managed_failure(message: &str) -> bool {
         "quota_exhausted",
         "sign_in_required",
         "session_conflict",
+        "session_ended",
         "payment_pending",
         "assistance_paused",
     ]
@@ -4147,8 +4187,11 @@ fn managed_stream_message(message: &str, label: &str) -> String {
         "Savvy assistance paused: sign in to your Savvy account again in Settings.".to_owned()
     } else if message.contains("assistance_paused") {
         "Savvy assistance paused by the service. Resume when it is available; your remaining time is preserved.".to_owned()
+    } else if message.contains("session_ended") {
+        "This meeting ended on the service. Your history is saved; start a new meeting to continue."
+            .to_owned()
     } else if message.contains("session_conflict") {
-        "Savvy assistance paused: this account already has an assisted meeting running.".to_owned()
+        "Savvy could not resume this meeting. Check whether another assisted meeting is running, or stop this meeting and start a new one.".to_owned()
     } else {
         format!("Live {label} transcription stopped: {message}")
     }
@@ -4515,7 +4558,15 @@ async fn resume_meeting(session_id: String, app: AppHandle) -> Result<MeetingSes
             })?;
             if managed {
                 // No application or capture lock is held during network requests.
-                managed::resume_session(&session_id)?;
+                if let Err(error) = managed::resume_session(&session_id) {
+                    if error.contains("session_ended") {
+                        run_app_operation(&app, |app, state| {
+                            stop_live_meeting(app, state, parsed)
+                        })?;
+                        return Err(managed_stream_message(&error, "meeting"));
+                    }
+                    return Err(error);
+                }
                 if let Err(error) = managed::prepare_session(&session_id) {
                     let _ = managed::stop_session(&session_id);
                     return Err(error);
@@ -5399,6 +5450,7 @@ fn generate_provider_recommendation(
     let recommendation_id = pending.recommendation_id;
     let request = pending.request;
     let prompt = build_recommendation_prompt(&request)?;
+    let mut actual_model = Some(model.to_owned());
     let advice = if provider == "managed" {
         let current = app
             .state::<AppState>()
@@ -5412,7 +5464,9 @@ fn generate_provider_recommendation(
         if !current {
             return Err("result_unavailable: generation canceled before dispatch".into());
         }
-        managed::generate_advice(&request.to_wire())?
+        let (advice, managed_model) = managed::generate_advice(&request.to_wire())?;
+        actual_model = managed_model;
+        advice
     } else if provider == "codex" {
         let server = codex_server(app)?;
         match server.generate::<ProviderAdvice>(
@@ -5456,7 +5510,7 @@ fn generate_provider_recommendation(
             token,
         )?
     };
-    resolve_provider_advice(recommendation_id, request, advice, provider, model)
+    resolve_provider_advice(recommendation_id, request, advice, provider, actual_model)
 }
 
 /// The model has started answering: reading the notes is over, composing has begun.
@@ -5497,7 +5551,7 @@ fn resolve_provider_advice(
     request: RecommendationRequest,
     advice: ProviderAdvice,
     provider: &str,
-    model: &str,
+    actual_model: Option<String>,
 ) -> Result<GeneratedRecommendation, String> {
     advice.validate_size()?;
     if advice.action == "skip" {
@@ -5594,7 +5648,7 @@ fn resolve_provider_advice(
         transcript_revision: request.transcript_revision,
         context_pack_hash: request.context_pack_hash,
         provider: Some(provider.into()),
-        model: Some(model.into()),
+        model: actual_model,
         lifecycle: RecommendationLifecycle::Completed,
     };
     validate_recommendation(&recommendation, &allowed_sources, &allowed_turns)
@@ -6426,6 +6480,16 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ended_managed_sessions_do_not_offer_resume_or_claim_another_meeting() {
+        assert!(super::is_terminal_managed_failure(
+            "session_ended: meeting ended"
+        ));
+        let message = super::managed_stream_message("session_ended: meeting ended", "meeting");
+        assert!(message.contains("start a new meeting"));
+        assert!(!message.contains("Resume"));
+        assert!(!message.contains("already has"));
+    }
     use super::*;
 
     #[test]

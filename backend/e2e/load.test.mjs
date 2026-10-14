@@ -260,6 +260,14 @@ test(
       });
       if (failure) throw failure;
       await sleep(Math.max(0, start + 300000 - performance.now()));
+      // Let the bounded paced queue deliver its tail before testing shutdown.
+      for (let i = 0; supplierFrames < sentFrames && i < 100; i++)
+        await sleep(20);
+      assert.equal(
+        supplierFrames,
+        sentFrames,
+        "paced audio tail delivers within two seconds",
+      );
       // Keep a real delayed upstream request and all audio sockets open during drain.
       const beforeDrainCalls = stripeCalls;
       const drainingCheckout = request("/v1/billing/checkout", token(99), {

@@ -660,6 +660,7 @@ test("live advice requires healthy audio and enforces language, duplicate and pa
   assert.equal(response.status, 200);
   assert.deepEqual(response.body, {
     advice,
+    model: h.state.config.aiModel,
     sessionId: SESSION,
     generationId: 1,
     transcriptRevision: 1,
@@ -1605,4 +1606,30 @@ test("without Stripe, a new account gets an unmetered grant and billing routes r
   h.state.config.billing = null;
   recoverRestart(h.state);
   assert.ok(balance(h.db, accountId, h.state.clock()).briefsAvailable > 0n);
+});
+
+test("Fireworks admits a full generated brief and still rejects oversized context", async (t) => {
+  const h = await fixture(t, { env: { SAVVY_FIREWORKS_API_KEY: "synthetic" } });
+  h.db
+    .transaction(() => createSession(h.db, 1n, SESSION, h.state.clock()))
+    .immediate();
+  const before = balance(h.db, 1n, h.state.clock());
+  const request = {
+    ...adviceRequest,
+    briefMarkdown: "Cedar scope. ".repeat(510),
+    recentTurns: [],
+    focalTurnIds: [],
+  };
+  const path = `/v1/sessions/${SESSION}/context`;
+  assert.equal((await h.post(path, { request })).status, 200);
+  assert.equal(
+    (
+      await h.post(path, {
+        request: { ...request, briefMarkdown: "x".repeat(40_000) },
+      })
+    ).body.code,
+    "context_too_large",
+  );
+  assert.deepEqual(balance(h.db, 1n, h.state.clock()), before);
+  assert.equal(h.calls.length, 0);
 });

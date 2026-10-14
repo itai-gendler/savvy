@@ -81,10 +81,14 @@ async function fixture(
     db,
     () => now,
     async (headers) => {
-      if (headers.authorization !== "Bearer valid")
+      if (
+        !["Bearer valid", "Bearer foreign"].includes(
+          headers.authorization ?? "",
+        )
+      )
         throw new ApiError("sign_in_required", "invalid test token");
       return {
-        accountId: 1n,
+        accountId: headers.authorization === "Bearer foreign" ? 2n : 1n,
         subject: "a",
         expiresAtMs: now + 60_000n,
         displayIdentity: {
@@ -462,4 +466,61 @@ test("dual sources idle independently and account disable closes the remaining s
   await waitFor(() => h.supplierSockets.clients.size === 0);
   assert.ok(h.view().settledMs <= 40n);
   assert.equal(balance(h.db, 1n, h.state.clock()).meetingMsReserved, 0n);
+});
+
+test("audio authorization renews in place without reopening suppliers or extending idle billing", async (t) => {
+  const h = await fixture(t),
+    ws = h.connect();
+  await once(ws, "open");
+  for (let i = 0; i < 18; i++) {
+    h.advance(4000n);
+    if (i === 9) {
+      const acknowledged = once(ws, "message");
+      ws.send(JSON.stringify({ type: "SavvyAuth", token: "valid" }));
+      assert.equal(
+        JSON.parse(String((await acknowledged)[0])).type,
+        "SavvyAuthOk",
+      );
+    }
+    const transcript = once(ws, "message");
+    ws.send(Buffer.alloc(640));
+    await transcript;
+  }
+  assert.equal(h.view().state, "active");
+  assert.equal(h.calls(), 1);
+  const closed = once(ws, "close");
+  h.advance(5000n);
+  await closed;
+  assert.equal(h.view().state, "paused");
+  assert.equal(h.view().settledMs, 360n);
+});
+
+test("audio authorization rejects invalid and foreign-account credentials", async (t) => {
+  for (const token of ["invalid", "foreign"]) {
+    const h = await fixture(t),
+      ws = h.connect();
+    await once(ws, "open");
+    const closed = once(ws, "close");
+    const message = once(ws, "message");
+    ws.send(JSON.stringify({ type: "SavvyAuth", token }));
+    assert.equal(
+      JSON.parse(String((await message)[0])).reason,
+      "sign_in_required",
+    );
+    await closed;
+    assert.equal(h.view().settledMs, 0n);
+  }
+});
+
+test("network-bunched audio is paced before reaching the supplier", async (t) => {
+  const h = await fixture(t),
+    ws = h.connect();
+  await once(ws, "open");
+  const received: number[] = [];
+  ws.on("message", () => received.push(performance.now()));
+  for (let i = 0; i < 20; i++) ws.send(Buffer.alloc(1600));
+  await waitFor(() => received.length === 20);
+  assert.ok(received[19]! - received[0]! >= 900);
+  assert.equal(h.forwarded(), 32_000);
+  assert.equal(h.view().state, "active");
 });

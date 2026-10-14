@@ -231,7 +231,10 @@ export function createSession(
   const existing = readSession(db, account, id);
   if (existing) {
     if (existing.state === "stopped")
-      throw new ApiError("session_conflict", "this meeting already ended");
+      throw new ApiError(
+        "session_ended",
+        "this meeting already ended; start a new meeting",
+      );
     return existing;
   }
   reserveAttempt(db, account, "session", now, 3_600_000n, 120n);
@@ -622,7 +625,10 @@ export function lifecycle(
       if (version !== session.lease_version)
         throw new ApiError("session_conflict", "invalid session lease");
       if (session.state === "stopped")
-        throw new ApiError("session_conflict", "meeting ended");
+        throw new ApiError(
+          "session_ended",
+          "meeting ended; start a new meeting",
+        );
       const end = min(
         state.sessions.get(session.id)?.deliveredUntilMs ?? 0n,
         now,
@@ -766,7 +772,10 @@ export function pauseSession(state: ServiceState, account: bigint, id: string) {
     .transaction(() => {
       const session = requireSession(state.db, account, id);
       if (session.state === "stopped")
-        throw new ApiError("session_conflict", "this meeting already ended");
+        throw new ApiError(
+          "session_ended",
+          "this meeting already ended; start a new meeting",
+        );
       const end = min(
         state.sessions.get(session.id)?.deliveredUntilMs ?? 0n,
         now,
