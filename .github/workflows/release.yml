@@ -68,6 +68,7 @@ jobs:
             target: "aarch64-apple-darwin"
 
     uses: ./.github/workflows/build.yml
+    secrets: inherit
     with:
       platform: ${{ matrix.platform }}
       target: ${{ matrix.target }}
