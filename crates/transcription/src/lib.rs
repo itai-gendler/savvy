@@ -665,9 +665,7 @@ pub async fn stream_managed_transcription(
             }
             TranscriptionError::Failed("provider_unavailable: Savvy connection failed".into())
         })?;
-    if let Some(connected) = connected {
-        let _ = connected.send(());
-    }
+    let mut connected = connected;
     let (mut writer, mut reader) = socket.split();
     let connection_epoch = STREAM_EPOCH.elapsed().as_millis() as u64;
     let mut incoming = (Instant::now(), 0);
@@ -721,7 +719,13 @@ pub async fn stream_managed_transcription(
                     tokio::select! {
                         result=tokio::time::timeout(Duration::from_secs(2),writer.send(Message::Binary(chunk.into())))=>{
                             match result {
-                                Ok(Ok(())) => {sent_chunks += 1; last_write = Some(Instant::now());},
+                                Ok(Ok(())) => {
+                                    sent_chunks += 1;
+                                    last_write = Some(Instant::now());
+                                    if let Some(connected) = connected.take() {
+                                        let _ = connected.send(());
+                                    }
+                                },
                                 Ok(Err(_)) => return Err(TranscriptionError::Failed("provider_unavailable: audio socket closed".into())),
                                 Err(_) => return Err(TranscriptionError::Failed("provider_unavailable: audio write timed out".into())),
                             }
@@ -752,7 +756,7 @@ pub async fn stream_managed_transcription(
                     }
                     Some(Ok(Message::Close(_))) | None => {
                         return Err(TranscriptionError::Failed(
-                            "Savvy service closed the transcription stream".into(),
+                            managed_close_reason(last_frame.unwrap_or(started).elapsed()).into(),
                         ));
                     }
                     Some(Err(error)) => {
@@ -785,6 +789,15 @@ pub async fn stream_managed_transcription(
         })
     );
     result
+}
+
+// Reopening a socket cannot repair a capture source that stopped producing PCM.
+fn managed_close_reason(frame_age: Duration) -> &'static str {
+    if frame_age >= Duration::from_secs(5) {
+        "capture_unavailable: no audio frames received before the stream closed"
+    } else {
+        "Savvy service closed the transcription stream"
+    }
 }
 
 /// Relay control frames carry a typed reason such as `quota_exhausted`.
@@ -1088,6 +1101,62 @@ mod tests {
         server.await.unwrap();
     }
 
+    #[test]
+    fn managed_close_distinguishes_capture_starvation_from_network_loss() {
+        assert!(
+            !super::managed_close_reason(std::time::Duration::from_millis(4999))
+                .contains("capture_unavailable")
+        );
+        assert!(
+            super::managed_close_reason(std::time::Duration::from_secs(5))
+                .contains("capture_unavailable")
+        );
+        assert!(
+            super::managed_close_reason(std::time::Duration::from_secs(30))
+                .contains("capture_unavailable")
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_relay_close_without_capture_requires_restart() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(5100)).await;
+            socket.close(None).await.unwrap();
+        });
+        let (_frames, frames) = flume::bounded(2);
+        let (_stop, stop) = tokio::sync::watch::channel(false);
+        let (transcripts, _) = tokio::sync::mpsc::channel(4);
+        let (connected, ready) = tokio::sync::oneshot::channel();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            super::stream_managed_transcription(
+                &format!("http://{address}"),
+                "capture-stalled-test",
+                "test-token",
+                None,
+                Some(connected),
+                "en",
+                1,
+                frames,
+                stop,
+                transcripts,
+                super::AudioSource::System,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("capture_unavailable"));
+        assert!(ready.await.is_err());
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn managed_credentials_rotate_on_the_existing_audio_socket() {
         use futures_util::StreamExt;
@@ -1150,10 +1219,11 @@ mod tests {
             .await
         });
         ready_rx.await.unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(1), connection_ready)
-            .await
-            .unwrap()
-            .unwrap();
+        let mut connection_ready = connection_ready;
+        assert!(matches!(
+            connection_ready.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
         tokens.send(Ok("renewed-test-token".into())).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(1), auth_rx)
             .await
@@ -1169,6 +1239,10 @@ mod tests {
             })
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(1), audio_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), connection_ready)
             .await
             .unwrap()
             .unwrap();

@@ -4203,13 +4203,16 @@ fn is_terminal_managed_failure(message: &str) -> bool {
         "session_ended",
         "payment_pending",
         "assistance_paused",
+        "capture_unavailable",
     ]
     .iter()
     .any(|code| message.contains(code))
 }
 
 fn managed_stream_message(message: &str, label: &str) -> String {
-    if message.contains("quota_exhausted") {
+    if message.contains("capture_unavailable") {
+        format!("Savvy assistance paused: {label} capture stopped supplying audio. Unlock your Mac, check audio permissions, then resume the meeting to restart capture.")
+    } else if message.contains("quota_exhausted") {
         "Savvy assistance paused: your included time ran out. Add time, then explicitly resume the meeting.".to_owned()
     } else if message.contains("sign_in_required") {
         "Savvy assistance paused: sign in to your Savvy account again in Settings.".to_owned()
@@ -6522,6 +6525,14 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unavailable_capture_pauses_managed_assistance_and_explains_restart() {
+        assert!(super::is_terminal_managed_failure("capture_unavailable"));
+        let message = super::managed_stream_message("capture_unavailable", "system audio");
+        assert!(message.contains("system audio capture"));
+        assert!(message.contains("resume the meeting"));
+    }
+
     #[test]
     fn ended_managed_sessions_do_not_offer_resume_or_claim_another_meeting() {
         assert!(super::is_terminal_managed_failure(
