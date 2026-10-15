@@ -35,6 +35,11 @@ test("Stripe transport keeps uncertain purchases unresolved and catalog associat
       let data = "";
       for await (const chunk of req) data += chunk;
       assert.equal(new URLSearchParams(data).get("customer"), "cus_test");
+      if (purchaseFlow && req.url === "/v1/checkout/sessions")
+        assert.equal(
+          new URLSearchParams(data).get("allow_promotion_codes"),
+          "true",
+        );
     }
     if (purchaseFlow) {
       if (req.url?.startsWith("/v1/prices/")) {
