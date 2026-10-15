@@ -353,6 +353,7 @@ export async function checkout(
         ["customer", customer],
         ["mode", product === "monthly" ? "subscription" : "payment"],
         ["managed_payments[enabled]", "false"],
+        ["allow_promotion_codes", "true"],
         ["line_items[0][price]", row.price_id],
         ["line_items[0][quantity]", "1"],
         ["client_reference_id", String(account)],
@@ -583,10 +584,15 @@ async function processEventInner(
       if (stripeId(object.customer) !== customer)
         throw new ApiError("invalid_request", "billing account changed");
     }
+    const checkoutSettled =
+      object.payment_status === "paid" ||
+      (object.payment_status === "no_payment_required" &&
+        object.status === "complete" &&
+        object.amount_total === 0);
     let purchase: [string, Product] | undefined;
     if (
       kind.startsWith("checkout.session.") &&
-      object.payment_status === "paid" &&
+      checkoutSettled &&
       object.mode === "payment"
     )
       purchase = [
@@ -643,7 +649,7 @@ async function processEventInner(
         if (!known)
           throw new ApiError("invalid_request", "unrecognized purchase");
         const { product, request_key: key } = known;
-        if (object.payment_status === "paid" && product === "pack") {
+        if (checkoutSettled && product === "pack") {
           const items = field(object, "line_items", "data");
           if (
             object.mode !== "payment" ||
@@ -659,7 +665,10 @@ async function processEventInner(
           db.prepare(
             "UPDATE checkouts SET price_id=? WHERE account_id=? AND request_key=? AND price_id IS NULL",
           ).run(price, account, key);
-          const origin = stripeId(object.payment_intent);
+          const origin =
+            object.payment_status === "no_payment_required"
+              ? objectId
+              : stripeId(object.payment_intent);
           grantPurchase(state, account, origin, "pack", offer, now, null);
         }
         if (typeof object.subscription === "string")
@@ -668,11 +677,10 @@ async function processEventInner(
           ).run(object.subscription, account, key);
         if (object.status === "complete" || object.status === "expired") {
           const status =
-            object.payment_status !== "paid" &&
-            kind === "checkout.session.async_payment_failed"
+            !checkoutSettled && kind === "checkout.session.async_payment_failed"
               ? "failed"
               : object.status === "complete" &&
-                  (product === "monthly" || object.payment_status !== "paid")
+                  (product === "monthly" || !checkoutSettled)
                 ? "payment_pending"
                 : object.status;
           db.prepare(
