@@ -27,7 +27,7 @@ export const faqItems = [
   {
     question: "Where does my data go?",
     answer:
-      "Source files stay in their folders. Savvy stores extracted text, indexes, briefs, recordings, and transcripts on your Mac. Audio streams to your transcription provider. Savvy sends selected excerpts, the whole brief and recent transcript turns to your CLI's model provider. With managed assistance, audio passes through Savvy to Deepgram and selected context passes through Savvy to Claude. Savvy stores provider keys and managed credentials in macOS Keychain. At startup, Savvy deletes local recordings and transcripts older than 30 days.",
+      "Source files stay in their folders. Savvy stores extracted text, indexes, briefs, recordings, and transcripts on your Mac. Audio streams to your transcription provider. Savvy sends selected excerpts, the whole brief and recent transcript turns to your CLI's model provider. With managed assistance, audio passes through Savvy to Deepgram and selected context passes through Savvy to Fireworks GLM-5.3. Savvy stores provider keys and managed credentials in macOS Keychain. At startup, Savvy deletes local recordings and transcripts older than 30 days.",
   },
   {
     question: "Does it work with Zoom, Meet, Teams or phone calls?",

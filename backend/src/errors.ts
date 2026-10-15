@@ -3,6 +3,7 @@ const statuses = {
   payment_pending: 402,
   quota_exhausted: 402,
   session_conflict: 409,
+  session_ended: 410,
   context_too_large: 413,
   rate_limited: 429,
   provider_unavailable: 503,

@@ -22,6 +22,8 @@ import {
 } from "./sessions.js";
 
 const MAX_AUDIO = 32_000;
+// A network stall shorter than the idle timeout can bunch up paced audio.
+const MAX_QUEUED_AUDIO = Number(AUDIO_IDLE_MS) * 32;
 const MAX_TRANSCRIPT = 1_048_576;
 const LANGUAGES = new Set([
   "multi",
@@ -292,7 +294,12 @@ async function relay(
     pumping = false;
   let queuedBytes = 0,
     outputBytes = 0;
+  let clientCloseCode: number | null = null;
+  let supplierCloseCode: number | null = null;
   let lastDelivered = state.clock();
+  let lastReceived: bigint | null = null;
+  let receivedBytes = 0;
+  let deliveredBytes = 0;
   let pumpTask = Promise.resolve();
   const queue: Buffer[] = [];
   const writes = new Set<Promise<void>>();
@@ -314,10 +321,33 @@ async function relay(
       sourceGeneration(state, session.id, source) === generation
     );
   };
-  const finish = async (providerFailed = false) => {
+  const finish = async (reason: string, providerFailed = false) => {
     supplierFailure ||= providerFailed;
     if (stopping) return;
     stopping = true;
+    // Log only transport metadata: supplier errors and close text can contain user data.
+    console.info(
+      JSON.stringify({
+        event: "audio_closed",
+        source,
+        reason,
+        sessionId: session.local_session_id,
+        supplierFailure,
+        lastDeliveredAgeMs: Number(state.clock() - lastDelivered),
+        lastReceivedAgeMs:
+          lastReceived === null ? null : Number(state.clock() - lastReceived),
+        receivedBytes,
+        deliveredBytes,
+        tokenRemainingMs: Number(tokenExpiry - state.clock()),
+        queuedBytes,
+        outputBytes,
+        clientCloseCode,
+        supplierCloseCode,
+        clientState: client.readyState,
+        upstreamState: upstream?.readyState ?? null,
+      }),
+    );
+    if (supplierFailure) console.warn("transcription provider unavailable");
     clearInterval(monitor);
     queue.length = 0;
     let abandoned = false;
@@ -364,12 +394,18 @@ async function relay(
     await Promise.all([close(client), ...(upstream ? [close(upstream)] : [])]);
     finishResolve();
   };
+  let nextDelivery = 0;
   const pump = async () => {
     if (pumping || stopping || upstream?.readyState !== WebSocket.OPEN) return;
     pumping = true;
     try {
       while (queue.length && !stopping) {
         const chunk = queue.shift()!;
+        // Network buffering can bunch up correctly paced client frames.
+        const delay = Math.ceil(nextDelivery - performance.now());
+        if (delay > 0)
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        if (stopping) break;
         state.requireAssistance();
         if (state.clock() >= tokenExpiry || !valid()) break;
         checkAudio(
@@ -381,6 +417,8 @@ async function relay(
           state.clock(),
         );
         try {
+          nextDelivery =
+            Math.max(nextDelivery, performance.now() - 50) + chunk.length / 32;
           await send(upstream, chunk, MAX_AUDIO);
         } catch {
           supplierFailure = true;
@@ -401,6 +439,7 @@ async function relay(
           { version: session.lease_version, generation },
         );
         lastDelivered = state.clock();
+        deliveredBytes += chunk.length;
         if (outcome === "exhausted") {
           await send(
             client,
@@ -411,7 +450,7 @@ async function relay(
         }
       }
       if (!stopping && (!valid() || state.clock() >= tokenExpiry))
-        void finish();
+        void finish("lease_or_token_expired");
     } finally {
       pumping = false;
     }
@@ -419,30 +458,82 @@ async function relay(
   const startPump = () => {
     if (!pumping && !stopping) {
       pumpTask = pump();
-      void pumpTask.catch(() => finish(supplierFailure));
+      void pumpTask.catch((error) =>
+        finish(
+          error instanceof ApiError ? `pump_${error.code}` : "pump_failed",
+          supplierFailure,
+        ),
+      );
     }
   };
+  let refreshing = false;
+  let lastRefresh = state.clock() - 5000n;
   client.on("message", (data, binary) => {
-    if (stopping || !binary) return;
+    if (stopping) return;
+    if (!binary) {
+      if (
+        refreshing ||
+        state.clock() - lastRefresh < 5000n ||
+        bytes(data).length > 8192
+      ) {
+        void finish("invalid_auth_frame");
+        return;
+      }
+      lastRefresh = state.clock();
+      refreshing = true;
+      void (async () => {
+        try {
+          const message = JSON.parse(bytes(data).toString());
+          if (message.type !== "SavvyAuth" || typeof message.token !== "string")
+            throw new Error("invalid audio authorization");
+          const identity = await state.authorize({
+            authorization: `Bearer ${message.token}`,
+          });
+          if (
+            stopping ||
+            identity.accountId !== session.account_id ||
+            identity.expiresAtMs <= state.clock() ||
+            !valid()
+          )
+            throw new Error("invalid audio authorization");
+          tokenExpiry = identity.expiresAtMs;
+          await send(client, '{"type":"SavvyAuthOk"}', MAX_TRANSCRIPT);
+        } catch {
+          await send(
+            client,
+            '{"type":"SavvyControl","reason":"sign_in_required"}',
+            MAX_TRANSCRIPT,
+          ).catch(() => {});
+          void finish("authorization_failed");
+        } finally {
+          refreshing = false;
+        }
+      })();
+      return;
+    }
     const chunk = bytes(data);
     if (
       !chunk.length ||
       chunk.length % 2 ||
       chunk.length > MAX_AUDIO ||
-      queuedBytes + chunk.length > MAX_AUDIO
+      queuedBytes + chunk.length >
+        (upstreamOpened ? MAX_QUEUED_AUDIO : MAX_AUDIO)
     ) {
-      void finish();
+      void finish("invalid_or_overflowing_audio");
       return;
     }
     queuedBytes += chunk.length;
+    receivedBytes += chunk.length;
+    lastReceived = state.clock();
     queue.push(chunk);
     startPump();
   });
-  client.on("close", () => {
-    void finish();
+  client.on("close", (code) => {
+    clientCloseCode = code;
+    void finish("client_closed");
   });
   client.on("error", () => {
-    void finish();
+    void finish("client_error");
   });
   const monitor = setInterval(() => {
     if (stopping) return;
@@ -453,23 +544,26 @@ async function relay(
           "SELECT disabled FROM accounts WHERE id=?",
         )
         .get(session.account_id)?.disabled;
-      if (
-        state.draining ||
-        state.aiPaused ||
-        now >= tokenExpiry ||
-        !valid() ||
-        disabled === undefined ||
-        disabled !== 0n ||
-        (upstream?.readyState === WebSocket.OPEN &&
-          now - lastDelivered >= AUDIO_IDLE_MS)
-      ) {
-        void finish();
+      let reason: string | undefined;
+      if (state.draining) reason = "service_draining";
+      else if (state.aiPaused) reason = "assistance_paused";
+      else if (now >= tokenExpiry) reason = "token_expired";
+      else if (!valid()) reason = "lease_invalid";
+      else if (disabled === undefined || disabled !== 0n)
+        reason = "account_disabled";
+      else if (
+        upstream?.readyState === WebSocket.OPEN &&
+        now - lastDelivered >= AUDIO_IDLE_MS
+      )
+        reason = "audio_idle";
+      if (reason) {
+        void finish(reason);
         return;
       }
       if (upstream?.readyState === WebSocket.OPEN)
         onIdleCheck(state, session.account_id, session.local_session_id, now);
     } catch {
-      void finish();
+      void finish("monitor_failed");
     }
   }, 100);
   try {
@@ -490,7 +584,7 @@ async function relay(
       }
     }
     if (stopping || !valid()) {
-      void finish();
+      void finish("lease_invalid_before_supplier");
       return await finished;
     }
     upstream = new WebSocket(upstreamUrl(state.config.deepgramUrl, language), {
@@ -506,11 +600,12 @@ async function relay(
     upstream.on("error", () => {
       if (!stopping && upstreamOpened) {
         supplierFailure = true;
-        void finish(true);
+        void finish("supplier_error", true);
       }
     });
-    upstream.on("close", () => {
-      if (!stopping && upstreamOpened) void finish(true);
+    upstream.on("close", (code) => {
+      supplierCloseCode = code;
+      if (!stopping && upstreamOpened) void finish("supplier_closed", true);
     });
     upstream.on("message", (data, binary) => {
       if (stopping || binary) return;
@@ -539,14 +634,14 @@ async function relay(
       });
       const size = Buffer.byteLength(filtered);
       if (outputBytes + size > MAX_TRANSCRIPT) {
-        void finish();
+        void finish("transcript_overflow");
         return;
       }
       outputBytes += size;
       const write = send(client, filtered, MAX_TRANSCRIPT);
       writes.add(write);
       void write
-        .catch(() => finish())
+        .catch(() => finish("transcript_write_failed"))
         .finally(() => {
           outputBytes -= size;
           writes.delete(write);
@@ -568,7 +663,7 @@ async function relay(
           '{"type":"SavvyControl","reason":"provider_unavailable"}',
           MAX_TRANSCRIPT,
         ).catch(() => {});
-      void finish(supplierFailure);
+      void finish("supplier_handshake_failed", supplierFailure);
       return await finished;
     }
     if (stopping) return await finished;
@@ -576,7 +671,7 @@ async function relay(
     startPump();
     return await finished;
   } catch {
-    void finish(supplierFailure);
+    void finish("relay_setup_failed", supplierFailure);
     return await finished;
   }
 }

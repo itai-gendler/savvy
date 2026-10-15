@@ -231,7 +231,10 @@ export function createSession(
   const existing = readSession(db, account, id);
   if (existing) {
     if (existing.state === "stopped")
-      throw new ApiError("session_conflict", "this meeting already ended");
+      throw new ApiError(
+        "session_ended",
+        "this meeting already ended; start a new meeting",
+      );
     return existing;
   }
   reserveAttempt(db, account, "session", now, 3_600_000n, 120n);
@@ -515,13 +518,16 @@ export function onAudio(
       session = requireSession(db, account, id);
       const since = session.billable_since_ms ?? now;
       let exhausted = false;
-      if (now - since >= min(CHECKPOINT_MS, session.reserved_ms))
-        [, exhausted] = settleTo(db, session, now, false);
+      // Gaps settle coverage and reset `since`; replenish by remaining
+      // reservation too, before a later contiguous frame can overrun it.
+      const checkpoint =
+        now - since >= min(CHECKPOINT_MS, session.reserved_ms) ||
+        session.reserved_ms <= RESERVATION_MS - CHECKPOINT_MS;
+      if (checkpoint) [, exhausted] = settleTo(db, session, now, false);
       session = requireSession(db, account, id);
-      const reserved =
-        now - since >= min(CHECKPOINT_MS, session.reserved_ms)
-          ? setReservation(db, session, RESERVATION_MS, now)
-          : session.reserved_ms;
+      const reserved = checkpoint
+        ? setReservation(db, session, RESERVATION_MS, now)
+        : session.reserved_ms;
       if (reserved === 0n) exhausted = true;
       db.prepare(
         "UPDATE managed_sessions SET lease_expires_ms=?,updated_at_ms=? WHERE id=?",
@@ -619,7 +625,10 @@ export function lifecycle(
       if (version !== session.lease_version)
         throw new ApiError("session_conflict", "invalid session lease");
       if (session.state === "stopped")
-        throw new ApiError("session_conflict", "meeting ended");
+        throw new ApiError(
+          "session_ended",
+          "meeting ended; start a new meeting",
+        );
       const end = min(
         state.sessions.get(session.id)?.deliveredUntilMs ?? 0n,
         now,
@@ -763,7 +772,10 @@ export function pauseSession(state: ServiceState, account: bigint, id: string) {
     .transaction(() => {
       const session = requireSession(state.db, account, id);
       if (session.state === "stopped")
-        throw new ApiError("session_conflict", "this meeting already ended");
+        throw new ApiError(
+          "session_ended",
+          "this meeting already ended; start a new meeting",
+        );
       const end = min(
         state.sessions.get(session.id)?.deliveredUntilMs ?? 0n,
         now,

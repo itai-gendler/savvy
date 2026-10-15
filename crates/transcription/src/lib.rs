@@ -618,6 +618,8 @@ pub async fn stream_managed_transcription(
     service_url: &str,
     session_id: &str,
     access_token: &str,
+    mut token_updates: Option<watch::Receiver<Result<String, String>>>,
+    connected: Option<tokio::sync::oneshot::Sender<()>>,
     language: &str,
     lease_version: u64,
     frames: Receiver<AudioFrame>,
@@ -663,13 +665,39 @@ pub async fn stream_managed_transcription(
             }
             TranscriptionError::Failed("provider_unavailable: Savvy connection failed".into())
         })?;
+    let mut connected = connected;
     let (mut writer, mut reader) = socket.split();
     let connection_epoch = STREAM_EPOCH.elapsed().as_millis() as u64;
     let mut incoming = (Instant::now(), 0);
     let mut audio_buffer = Vec::with_capacity(STREAMING_CHUNK_BYTES * 2);
+    // Capture callbacks can bunch up after scheduling or socket delays. Send
+    // each 50 ms chunk at real time instead of uploading the backlog in a burst.
+    let mut pacing = tokio::time::interval(Duration::from_millis(50));
+    pacing.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    let started = Instant::now();
+    let mut captured_frames = 0_u64;
+    let mut sent_chunks = 0_u64;
+    let mut discarded_bytes = 0_usize;
+    let mut last_frame = None;
+    let mut last_write = None;
+    let result = async {
     loop {
         tokio::select! {
+            changed = async {
+                match token_updates.as_mut() {
+                    Some(updates) => updates.changed().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if changed.is_err() { token_updates = None; continue; }
+                let token = token_updates.as_ref().unwrap().borrow().clone()
+                    .map_err(TranscriptionError::Failed)?;
+                let message = serde_json::json!({"type":"SavvyAuth", "token":token});
+                if !write_message(&mut writer, Message::Text(message.to_string().into()), &mut stop).await? {
+                    return Ok(());
+                }
+            }
             changed = stop.changed() => {
                 if changed.is_ok() && !*stop.borrow() {
                     continue;
@@ -679,14 +707,28 @@ pub async fn stream_managed_transcription(
             }
             frame = frames.recv_async() => {
                 let frame = frame.map_err(|_| TranscriptionError::Failed("capture stream ended".into()))?;
+                captured_frames += 1;
+                last_frame = Some(Instant::now());
                 let pcm=frame_to_pcm16(&frame);
-                if pcm.len()>32_000 {continue;}
-                if audio_buffer.len()+pcm.len()>32_000 {audio_buffer.clear();}
+                if pcm.len()>32_000 {discarded_bytes += pcm.len(); continue;}
+                if audio_buffer.len()+pcm.len()>32_000 {discarded_bytes += audio_buffer.len(); audio_buffer.clear();}
                 audio_buffer.extend(pcm);
-                while let Some(chunk) = take_streaming_chunk(&mut audio_buffer) {
+            }
+            _ = pacing.tick() => {
+                if let Some(chunk) = take_streaming_chunk(&mut audio_buffer) {
                     tokio::select! {
-                        result=tokio::time::timeout(Duration::from_millis(500),writer.send(Message::Binary(chunk.into())))=>{
-                            if !matches!(result,Ok(Ok(()))) {return Err(TranscriptionError::Failed("provider_unavailable: audio write stalled".into()));}
+                        result=tokio::time::timeout(Duration::from_secs(2),writer.send(Message::Binary(chunk.into())))=>{
+                            match result {
+                                Ok(Ok(())) => {
+                                    sent_chunks += 1;
+                                    last_write = Some(Instant::now());
+                                    if let Some(connected) = connected.take() {
+                                        let _ = connected.send(());
+                                    }
+                                },
+                                Ok(Err(_)) => return Err(TranscriptionError::Failed("provider_unavailable: audio socket closed".into())),
+                                Err(_) => return Err(TranscriptionError::Failed("provider_unavailable: audio write timed out".into())),
+                            }
                         }
                         _=stop.changed()=>return Ok(()),
                     }
@@ -714,7 +756,7 @@ pub async fn stream_managed_transcription(
                     }
                     Some(Ok(Message::Close(_))) | None => {
                         return Err(TranscriptionError::Failed(
-                            "Savvy service closed the transcription stream".into(),
+                            managed_close_reason(last_frame.unwrap_or(started).elapsed()).into(),
                         ));
                     }
                     Some(Err(error)) => {
@@ -726,6 +768,35 @@ pub async fn stream_managed_transcription(
                 }
             }
         }
+    }
+    }.await;
+    // Only timing and counts: never log tokens, URLs, audio, or supplier text.
+    log::info!(
+        "{}",
+        serde_json::json!({
+            "event": "managed_audio_closed",
+            "sessionId": session_id,
+            "source": source_name,
+            "leaseVersion": lease_version,
+            "failed": result.is_err(),
+            "elapsedMs": started.elapsed().as_millis(),
+            "capturedFrames": captured_frames,
+            "sentChunks": sent_chunks,
+            "discardedBytes": discarded_bytes,
+            "bufferedBytes": audio_buffer.len(),
+            "lastFrameAgeMs": last_frame.map(|at| at.elapsed().as_millis()),
+            "lastWriteAgeMs": last_write.map(|at| at.elapsed().as_millis()),
+        })
+    );
+    result
+}
+
+// Reopening a socket cannot repair a capture source that stopped producing PCM.
+fn managed_close_reason(frame_age: Duration) -> &'static str {
+    if frame_age >= Duration::from_secs(5) {
+        "capture_unavailable: no audio frames received before the stream closed"
+    } else {
+        "Savvy service closed the transcription stream"
     }
 }
 
@@ -996,6 +1067,274 @@ pub fn resample_linear(samples: &[f32], source_rate: u32, target_rate: u32) -> V
 mod tests {
 
     #[tokio::test]
+    async fn rejected_managed_handshake_does_not_report_recovery() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let (connected, connection_ready) = tokio::sync::oneshot::channel();
+        let (_frames, frames) = flume::bounded(1);
+        let (_stop, stop) = tokio::sync::watch::channel(false);
+        let (transcripts, _) = tokio::sync::mpsc::channel(1);
+        let result = super::stream_managed_transcription(
+            &format!("http://{address}"),
+            "test-session",
+            "test-token",
+            None,
+            Some(connected),
+            "en",
+            1,
+            frames,
+            stop,
+            transcripts,
+            super::AudioSource::Microphone,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(connection_ready.await.is_err());
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn managed_close_distinguishes_capture_starvation_from_network_loss() {
+        assert!(
+            !super::managed_close_reason(std::time::Duration::from_millis(4999))
+                .contains("capture_unavailable")
+        );
+        assert!(
+            super::managed_close_reason(std::time::Duration::from_secs(5))
+                .contains("capture_unavailable")
+        );
+        assert!(
+            super::managed_close_reason(std::time::Duration::from_secs(30))
+                .contains("capture_unavailable")
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_relay_close_without_capture_requires_restart() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(5100)).await;
+            socket.close(None).await.unwrap();
+        });
+        let (_frames, frames) = flume::bounded(2);
+        let (_stop, stop) = tokio::sync::watch::channel(false);
+        let (transcripts, _) = tokio::sync::mpsc::channel(4);
+        let (connected, ready) = tokio::sync::oneshot::channel();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            super::stream_managed_transcription(
+                &format!("http://{address}"),
+                "capture-stalled-test",
+                "test-token",
+                None,
+                Some(connected),
+                "en",
+                1,
+                frames,
+                stop,
+                transcripts,
+                super::AudioSource::System,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("capture_unavailable"));
+        assert!(ready.await.is_err());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn managed_credentials_rotate_on_the_existing_audio_socket() {
+        use futures_util::StreamExt;
+        struct Diagnostics(std::sync::Mutex<Vec<String>>);
+        impl log::Log for Diagnostics {
+            fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record<'_>) {
+                if record.target() == "savvy_transcription" {
+                    self.0.lock().unwrap().push(record.args().to_string());
+                }
+            }
+            fn flush(&self) {}
+        }
+        static DIAGNOSTICS: Diagnostics = Diagnostics(std::sync::Mutex::new(Vec::new()));
+        log::set_logger(&DIAGNOSTICS).unwrap();
+        log::set_max_level(log::LevelFilter::Info);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (auth_tx, auth_rx) = tokio::sync::oneshot::channel();
+        let (audio_tx, audio_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            ready_tx.send(()).unwrap();
+            let message = socket.next().await.unwrap().unwrap();
+            let message: serde_json::Value =
+                serde_json::from_str(message.to_text().unwrap()).unwrap();
+            assert_eq!(
+                message,
+                serde_json::json!({"type":"SavvyAuth", "token":"renewed-test-token"})
+            );
+            auth_tx.send(()).unwrap();
+            // A later frame still arrives on this same connection.
+            assert!(socket.next().await.unwrap().unwrap().is_binary());
+            audio_tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        let (frames_tx, frames_rx) = flume::bounded(2);
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let (tokens, updates) = tokio::sync::watch::channel(Ok("initial-test-token".to_owned()));
+        let (transcripts, _) = tokio::sync::mpsc::channel(4);
+        let (connected, connection_ready) = tokio::sync::oneshot::channel();
+        let client = tokio::spawn(async move {
+            super::stream_managed_transcription(
+                &format!("http://{address}"),
+                "00000000-0000-4000-8000-000000000005",
+                "initial-test-token",
+                Some(updates),
+                Some(connected),
+                "en",
+                1,
+                frames_rx,
+                stop_rx,
+                transcripts,
+                super::AudioSource::Microphone,
+            )
+            .await
+        });
+        ready_rx.await.unwrap();
+        let mut connection_ready = connection_ready;
+        assert!(matches!(
+            connection_ready.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        tokens.send(Ok("renewed-test-token".into())).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), auth_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        frames_tx
+            .send(super::AudioFrame {
+                source: super::AudioSource::Microphone,
+                samples: vec![0.0; 800],
+                sample_rate: 16_000,
+                channels: 1,
+                timestamp_ms: 0,
+            })
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), audio_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), connection_ready)
+            .await
+            .unwrap()
+            .unwrap();
+        // Abrupt relay loss must still emit safe capture/write diagnostics.
+        server.abort();
+        tokio::time::timeout(std::time::Duration::from_secs(1), client)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        let logs = DIAGNOSTICS.0.lock().unwrap();
+        let diagnostic = logs
+            .iter()
+            .find(|line| line.contains("00000000-0000-4000-8000-000000000005"))
+            .unwrap();
+        assert!(!diagnostic.contains("test-token"));
+        assert!(!diagnostic.contains(&address.to_string()));
+        let value: serde_json::Value = serde_json::from_str(diagnostic).unwrap();
+        assert_eq!(value["capturedFrames"], 1);
+        assert_eq!(value["sentChunks"], 1);
+        assert_eq!(value["discardedBytes"], 0);
+        assert_eq!(value["bufferedBytes"], 0);
+        assert_eq!(value["failed"], true);
+        assert!(value["lastFrameAgeMs"].is_number());
+        assert!(value["lastWriteAgeMs"].is_number());
+        assert_eq!(value.as_object().unwrap().len(), 12);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn managed_audio_bursts_are_paced_at_real_time() {
+        use futures_util::StreamExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            ready_tx.send(()).unwrap();
+            let mut first = None;
+            for _ in 0..20 {
+                let message = socket.next().await.unwrap().unwrap();
+                assert!(message.is_binary());
+                assert_eq!(message.len(), 1600);
+                first.get_or_insert_with(std::time::Instant::now);
+            }
+            assert!(first.unwrap().elapsed() >= std::time::Duration::from_millis(900));
+            socket
+        });
+        let (frames_tx, frames_rx) = flume::bounded(2);
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let (transcripts, _) = tokio::sync::mpsc::channel(4);
+        let client = tokio::spawn(async move {
+            super::stream_managed_transcription(
+                &format!("http://{address}"),
+                "00000000-0000-4000-8000-000000000001",
+                "test-token",
+                None,
+                None,
+                "en",
+                1,
+                frames_rx,
+                stop_rx,
+                transcripts,
+                super::AudioSource::Microphone,
+            )
+            .await
+        });
+        ready_rx.await.unwrap();
+        frames_tx
+            .send(super::AudioFrame {
+                source: super::AudioSource::Microphone,
+                samples: vec![0.0; 16_000],
+                sample_rate: 16_000,
+                channels: 1,
+                timestamp_ms: 0,
+            })
+            .unwrap();
+        let socket = tokio::time::timeout(std::time::Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap();
+        stop_tx.send(true).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), client)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        drop(socket);
+    }
+
+    #[tokio::test]
     async fn both_transports_stop_during_stalled_handshakes_and_writes() {
         for (managed, handshake) in [(false, false), (false, true), (true, false), (true, true)] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1034,6 +1373,8 @@ mod tests {
                     &format!("http://{address}"),
                     "00000000-0000-4000-8000-000000000001",
                     "synthetic-access-token",
+                    None,
+                    None,
                     "en",
                     1,
                     frames_rx,

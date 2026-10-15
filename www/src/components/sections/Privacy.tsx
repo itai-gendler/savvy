@@ -221,8 +221,8 @@ export function Privacy() {
             database. With personal providers, audio streams to your transcription provider. AI
             tasks send selected excerpts, your brief and recent transcript turns to your model
             provider. With managed assistance, Savvy relays audio to Deepgram and selected context
-            to Claude. At startup, Savvy removes local recordings and transcripts older than 30
-            days.
+            to Fireworks GLM-5.3. At startup, Savvy removes local recordings and transcripts older
+            than 30 days.
           </p>
           <StatList
             items={[

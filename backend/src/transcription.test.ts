@@ -81,10 +81,14 @@ async function fixture(
     db,
     () => now,
     async (headers) => {
-      if (headers.authorization !== "Bearer valid")
+      if (
+        !["Bearer valid", "Bearer foreign"].includes(
+          headers.authorization ?? "",
+        )
+      )
         throw new ApiError("sign_in_required", "invalid test token");
       return {
-        accountId: 1n,
+        accountId: headers.authorization === "Bearer foreign" ? 2n : 1n,
         subject: "a",
         expiresAtMs: now + 60_000n,
         displayIdentity: {
@@ -172,6 +176,7 @@ test("audio upgrade rejects unauthorized and stale leases before supplier connec
 });
 
 test("supplier handshake failure delivers typed control and never charges", async (t) => {
+  const warnings = t.mock.method(console, "warn", () => {});
   const h = await fixture(t, true),
     ws = h.connect();
   const message = once(ws, "message");
@@ -185,6 +190,10 @@ test("supplier handshake failure delivers typed control and never charges", asyn
   await closed;
   assert.equal(h.view().settledMs, 0n);
   assert.equal(h.calls(), 1);
+  assert.deepEqual(
+    warnings.mock.calls.map((call) => call.arguments),
+    [["transcription provider unavailable"]],
+  );
 });
 
 test("silent reconnect attempts are durably limited before supplier handshakes", async (t) => {
@@ -279,6 +288,8 @@ test("two sources share coverage, superseded connections close, and pause preven
 });
 
 test("supplier loss absorbs uncheckpointed time while explicit drain settles observed audio", async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, "info", (line: string) => logs.push(line));
   for (const drain of [false, true]) {
     const h = await fixture(t),
       ws = h.connect();
@@ -293,6 +304,12 @@ test("supplier loss absorbs uncheckpointed time while explicit drain settles obs
     } else for (const socket of h.supplierSockets.clients) socket.terminate();
     await closed;
     assert.equal(h.view().settledMs, drain ? 20n : 0n);
+    const diagnostic = JSON.parse(logs.at(-1)!);
+    assert.equal(
+      diagnostic.reason,
+      drain ? "client_closed" : "supplier_closed",
+    );
+    assert.equal(diagnostic.supplierFailure, !drain);
   }
 });
 
@@ -330,6 +347,8 @@ test("upstream language selection fixes the supplier model and replaces caller q
 });
 
 test("idle and disabled accounts close supplier work without charging a silent tail", async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, "info", (line: string) => logs.push(line));
   for (const disabled of [false, true]) {
     const h = await fixture(t),
       ws = h.connect();
@@ -344,6 +363,41 @@ test("idle and disabled accounts close supplier work without charging a silent t
     await waitFor(() => h.supplierSockets.clients.size === 0);
     assert.equal(h.view().settledMs, 20n);
     assert.equal(h.view().state, "paused");
+    const diagnostic = JSON.parse(logs.at(-1)!);
+    assert.equal(diagnostic.event, "audio_closed");
+    assert.equal(
+      diagnostic.reason,
+      disabled ? "account_disabled" : "audio_idle",
+    );
+    assert.equal(diagnostic.sessionId, ID);
+    assert.equal(diagnostic.supplierFailure, false);
+    assert.equal(diagnostic.lastDeliveredAgeMs, disabled ? 0 : 5000);
+    assert.equal(diagnostic.lastReceivedAgeMs, disabled ? 0 : 5000);
+    assert.equal(diagnostic.receivedBytes, 640);
+    assert.equal(diagnostic.deliveredBytes, 640);
+    assert.deepEqual(
+      Object.keys(diagnostic).sort(),
+      [
+        "event",
+        "source",
+        "reason",
+        "sessionId",
+        "supplierFailure",
+        "lastDeliveredAgeMs",
+        "lastReceivedAgeMs",
+        "receivedBytes",
+        "deliveredBytes",
+        "tokenRemainingMs",
+        "queuedBytes",
+        "outputBytes",
+        "clientState",
+        "upstreamState",
+        "clientCloseCode",
+        "supplierCloseCode",
+      ].sort(),
+    );
+    assert.ok(!logs.join(" ").includes("Synthetic transcript"));
+    assert.ok(!logs.join(" ").includes("Bearer"));
   }
 });
 
@@ -457,4 +511,107 @@ test("dual sources idle independently and account disable closes the remaining s
   await waitFor(() => h.supplierSockets.clients.size === 0);
   assert.ok(h.view().settledMs <= 40n);
   assert.equal(balance(h.db, 1n, h.state.clock()).meetingMsReserved, 0n);
+});
+
+test("audio authorization renews in place without reopening suppliers or extending idle billing", async (t) => {
+  const h = await fixture(t),
+    ws = h.connect();
+  await once(ws, "open");
+  for (let i = 0; i < 18; i++) {
+    h.advance(4000n);
+    if (i === 9) {
+      const acknowledged = once(ws, "message");
+      ws.send(JSON.stringify({ type: "SavvyAuth", token: "valid" }));
+      assert.equal(
+        JSON.parse(String((await acknowledged)[0])).type,
+        "SavvyAuthOk",
+      );
+    }
+    const transcript = once(ws, "message");
+    ws.send(Buffer.alloc(640));
+    await transcript;
+  }
+  assert.equal(h.view().state, "active");
+  assert.equal(h.calls(), 1);
+  const closed = once(ws, "close");
+  h.advance(5000n);
+  await closed;
+  assert.equal(h.view().state, "paused");
+  assert.equal(h.view().settledMs, 360n);
+});
+
+test("audio authorization rejects invalid and foreign-account credentials", async (t) => {
+  for (const token of ["invalid", "foreign"]) {
+    const h = await fixture(t),
+      ws = h.connect();
+    await once(ws, "open");
+    const closed = once(ws, "close");
+    const message = once(ws, "message");
+    ws.send(JSON.stringify({ type: "SavvyAuth", token }));
+    assert.equal(
+      JSON.parse(String((await message)[0])).reason,
+      "sign_in_required",
+    );
+    await closed;
+    assert.equal(h.view().settledMs, 0n);
+  }
+});
+
+test("network-bunched audio is paced before reaching the supplier", async (t) => {
+  const h = await fixture(t),
+    ws = h.connect();
+  await once(ws, "open");
+  const received: number[] = [];
+  ws.on("message", () => received.push(performance.now()));
+  // First-response delivery can be delayed; measure from burst submission.
+  const started = performance.now();
+  for (let i = 0; i < 20; i++) ws.send(Buffer.alloc(1600));
+  await waitFor(() => received.length === 20);
+  assert.ok(received[19]! - started >= 900);
+  assert.equal(h.forwarded(), 32_000);
+  assert.equal(h.view().state, "active");
+});
+
+test("a delayed audio burst survives the old one-second queue limit and settles only delivered audio", async (t) => {
+  const h = await fixture(t),
+    ws = h.connect();
+  await once(ws, "open");
+  const ready = once(ws, "message");
+  ws.send(Buffer.alloc(640));
+  await ready;
+  h.advance(20n);
+  let received = 0;
+  ws.on("message", () => {
+    received++;
+    h.advance(50n);
+  });
+  const started = performance.now();
+  for (let i = 0; i < 30; i++) ws.send(Buffer.alloc(1600));
+  await waitFor(() => received === 30);
+  assert.ok(performance.now() - started >= 1400);
+  assert.equal(ws.readyState, WebSocket.OPEN);
+  assert.equal(h.forwarded(), 48_640);
+  const closed = once(ws, "close");
+  ws.close();
+  await closed;
+  await waitFor(() => h.view().state === "paused");
+  assert.equal(h.view().settledMs, 1520n);
+  assert.equal(balance(h.db, 1n, h.state.clock()).meetingMsReserved, 0n);
+});
+
+test("audio frame and five-second queue limits still reject oversized input", async (t) => {
+  for (const oversizedFrame of [false, true]) {
+    const h = await fixture(t),
+      ws = h.connect();
+    await once(ws, "open");
+    const ready = once(ws, "message");
+    ws.send(Buffer.alloc(640));
+    await ready;
+    if (oversizedFrame) ws.send(Buffer.alloc(32_002));
+    else for (let i = 0; i < 101; i++) ws.send(Buffer.alloc(1600));
+    await waitFor(() => ws.readyState === WebSocket.CLOSED);
+    await waitFor(() => h.view().state === "paused");
+    assert.equal(balance(h.db, 1n, h.state.clock()).meetingMsReserved, 0n);
+    assert.ok(h.view().settledMs <= BigInt(h.forwarded() / 32));
+  }
 });

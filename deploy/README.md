@@ -37,6 +37,12 @@ database paths and the loopback listener. Values in `/etc/savvy/backend.env` ove
 these unit settings, so do not set `SAVVY_HOST`, `PORT`, `SAVVY_AUTH_DATABASE` or
 `SAVVY_DB_PATH` there. Run only one instance.
 
+The unit uses the pinned official Node runtime at
+`/opt/node-v22.23.2-linux-x64/bin/node`. Download its Linux x64 archive and
+`SHASUMS256.txt` from `https://nodejs.org/dist/v22.23.2/`, verify the archive
+with SHA-256 before extracting it into `/opt`, and verify the installed version.
+Keep this path in sync with the repository Node pin.
+
 The unit sends SIGINT and allows 150 seconds. Node rejects new paid work, aborts AI,
 settles observed relay audio and releases all remaining meeting reservations before
 closing both databases. Its own 140-second fallback exits unsuccessfully if drain
@@ -53,12 +59,38 @@ the signing secret and the native client ID before the first sign-in. Never chan
 any of these afterwards: installed desktops, refresh tokens and account identities
 depend on them. Any alias hostname must terminate at this same backend.
 
-`deploy/auth-proxy.conf.example` has one loopback upstream. It preserves the raw
-webhook body and Authorization header, supports WebSocket upgrades and applies a
-64-KiB auth limit and one-MiB managed limit. Configure the exact proxy peer in
-`SAVVY_AUTH_TRUSTED_PROXIES`; the proxy overwrites the client-address header.
-Supply the owned-domain TLS configuration before validating it with `nginx -t`.
-The example cannot validate certificates or public routing locally.
+On Epistoma, use the existing remotely managed Cloudflare Tunnel directly:
+`api.savvycopilot.com` routes to `http://127.0.0.1:8788` and the separate staging
+hostname routes to `http://127.0.0.1:8789`. Insert each ingress rule before the
+catch-all without changing unrelated routes. Create proxied DNS records pointing
+to the existing tunnel. Keep auth/API responses uncached and pass Authorization,
+raw Stripe webhook bodies, and WebSocket upgrades without interactive challenges.
+
+Set `SAVVY_AUTH_TRUSTED_PROXIES=127.0.0.1` and
+`SAVVY_AUTH_PROXY_IP_HEADER=cf-connecting-ip`. Only exact trusted socket peers
+can supply the selected address. Missing, malformed, repeated, or comma-separated
+values from those peers return 400; there is no fallback to a caller's custom
+header. The default selector remains `x-savvy-proxy-ip` for standalone nginx.
+Loopback readiness probes must include the selected header:
+
+```sh
+curl --fail -H 'CF-Connecting-IP: 127.0.0.1' http://127.0.0.1:8788/ready
+curl --fail -H 'CF-Connecting-IP: 127.0.0.1' http://127.0.0.1:8788/readyz
+```
+
+`deploy/auth-proxy.conf.example` is a standalone nginx alternative. It preserves
+raw bodies, Authorization and upgrades, but its `$remote_addr` forwarding would
+attribute every visitor to cloudflared if placed behind the tunnel. That topology
+needs explicit trusted real-client-IP handling and is not used on Epistoma.
+
+Staging uses its own `savvy-staging` user, `/var/lib/savvy-staging` state,
+`/etc/savvy/staging.env`, `/opt/savvy/staging` release link, issuer/audience
+`https://staging-api.savvycopilot.com`, and client ID `savvy-desktop-staging`.
+Adapt the existing unit's user, group, working directory, environment file, state
+and writable paths, and port; preserve its drain and hardening settings. Restrict
+only the staging hostname to the current test-machine egress IPs, except the
+signed `/v1/billing/webhook` route. Use real identity/SMTP and suppliers with
+Stripe test-mode credentials. Never copy staging state or test grants to production.
 
 Configure Google identity, SMTP, Stripe and the transcription and AI suppliers in the
 protected environment. Do not embed secrets in desktop builds. Offer prices come
@@ -85,6 +117,9 @@ fixtures. Stripe-hosted return pages trigger refresh and never prove payment.
 To upgrade, stop the unit, take a backup, point `/opt/savvy/current` at the new
 release, run `node build/migrate.js` and start the unit again. Keep the previous
 release directory until the new one has passed readiness and a sign-in check.
+If scheduled backups are enabled, first stop both `savvy-backup.timer` and
+`savvy-backup.service`, letting the backup's restart callback finish before the
+maintenance stop. Re-enable the timer only after recovery checks pass.
 
 For backups, stop the backend and run
 `pnpm --dir backend backup /path/to/new-private-backup` with its environment loaded.
@@ -92,18 +127,118 @@ The command locks both databases, uses SQLite's backup API, checks integrity and
 writes a manifest with hashes. Protect the two snapshots and the auth secret.
 Restoration steps are in `backend/README.md`.
 
+### Daily production backups
+
+After production identity, billing and installed-app drain acceptance pass, install
+the Savvy-only backup job before opening customer admission:
+
+```sh
+sudo install -d -m 0755 /usr/local/libexec
+sudo install -m 0755 deploy/savvy-backup.sh /usr/local/libexec/savvy-backup
+sudo install -d -o savvy -g savvy -m 0700 /var/backups/savvy
+sudo install -m 0644 deploy/savvy-backup.service deploy/savvy-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start savvy-backup.service
+sudo systemctl status savvy-backup.service --no-pager
+```
+
+The job first requires an active production backend. It records that restart is
+needed, normally drains the backend, and runs the existing compiled backup command
+as `savvy`. `ExecStopPost` restarts the backend after success, failure or process
+termination. A failed restart keeps its root-only marker for recovery; the job
+does not start an intentionally inactive backend. Node reads the protected env
+file without sourcing it into a shell or printing credentials.
+
+Snapshots are new timestamped directories under `/var/backups/savvy`, mode 0700,
+with both SQLite files and the hash/integrity/signing-key manifest mode 0600.
+The matching stable `BETTER_AUTH_SECRET` remains in the separate protected store.
+Keep a protected off-host copy of that secret and both snapshots. On this Mac,
+use a 0700 directory outside Git with FileVault enabled and `umask 077`; SSH can
+stream the selected backup without making the VPS files publicly readable:
+
+```sh
+umask 077
+ssh jaume@epistoma 'sudo tar -C /var/backups/savvy/EXACT_TIMESTAMP -czf - auth.sqlite service.sqlite manifest.json' > savvy-backup.tar.gz
+```
+
+Record the actual off-host destination in the private rollout manifest. Verify
+manifest hashes, SQLite integrity and a private restore with the matching issuer,
+secret and signing identity before enabling the timer. Do not copy staging state
+to production or restore an older ledger over newer payments. To test a restore,
+copy the pair to a new private directory owned by `savvy`, then run the matching
+compiled backend with database paths pointing only to that copy and a loopback
+port that has no public tunnel route:
+
+```sh
+sudo runuser -u savvy -- env \
+  SAVVY_AUTH_DATABASE=/var/lib/savvy-restore/EXACT_TIMESTAMP/auth.sqlite \
+  SAVVY_DB_PATH=/var/lib/savvy-restore/EXACT_TIMESTAMP/service.sqlite \
+  SAVVY_HOST=127.0.0.1 PORT=8790 \
+  /opt/node-v22.23.2-linux-x64/bin/node --env-file=/etc/savvy/backend.env \
+  /opt/savvy/releases/EXACT_MATCHING_SHA/backend/build/server.js
+```
+
+Check `/ready` using `CF-Connecting-IP: 127.0.0.1`, signing key IDs, refresh rotation
+and current payments/allowances/usage/purchases. Stop the clone normally afterward.
+Keep the live DB pair unchanged during the drill. After this gate passes:
+
+```sh
+sudo systemctl enable --now savvy-backup.timer
+sudo systemctl list-timers savvy-backup.timer --all --no-pager
+```
+
+The timer runs at 03:00 UTC and catches missed runs after downtime. Each backup
+briefly interrupts the service; desktop listening must resume explicitly. Monitor
+failed backup/restart units and off-host copy freshness by configuring the Savvy
+monitor before enabling the timer. Inspect failures with `journalctl -u savvy-backup.service`; if the
+backend did not restart, recover it with `systemctl start savvy-backend.service`
+and verify readiness and reservation recovery before reopening access.
+
 Roll back by starting the previous release against a fresh copy of current state,
 so paid usage since the upgrade is kept. Never restore an older snapshot without
 reconciling payments and usage since that snapshot. Reopen purchases only after
 recovering uncertain checkout identities.
 
+### Production monitoring
+
+Install the Savvy-only monitor after the backend and backup units are installed.
+It runs each minute and writes aggregate JSON to the local journal. It checks
+origin and public readiness, backend/backup failures, reservations more than one
+minute past their lease/deadline, pending billing events older than five minutes,
+negative allowances, provider/reconciliation errors in the last five minutes and
+free disk space. It fails below 1 GiB free or 10% free. A running scheduled backup
+suppresses only the expected readiness interruption. Failed/canceled provider
+operations are counted separately; cancellation alone does not trigger a failure.
+
+```sh
+sudo install -m 0644 deploy/savvy-monitor.py /usr/local/libexec/savvy-monitor.py
+sudo install -m 0644 deploy/savvy-monitor.service deploy/savvy-monitor.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start savvy-monitor.service
+sudo journalctl -u savvy-monitor.service -n 5 --no-pager
+sudo systemctl enable --now savvy-monitor.timer
+```
+
+The monitor reads SQLite in read-only mode and never emits identities, event IDs,
+audio, context, credential values or raw supplier error bodies. Its current
+destination is journald on Epistoma; no external message is sent. Record that
+destination and test an unhealthy state before opening admission. Review
+`journalctl -u savvy-monitor.service --since=-24h` during launch observation.
+The local timer cannot detect an unreachable VPS while it is down. Public
+readiness must also be observed every minute from a separate machine during the
+24-hour launch gate, and an existing external monitor should be connected before
+leaving production unattended. A failed monitor does not stop or restart the
+backend automatically.
+
 ## Acceptance still required
 
+Follow [`backend/e2e/managed-acceptance.md`](../backend/e2e/managed-acceptance.md)
+for the installed-app, hosted-provider, operations and release checks.
 Run root `pnpm verify`, the backend browser checks, the desktop issuer tests and the
 website lint, typecheck, build and smoke checks. Complete the five-minute mixed load
 test, the installed macOS journey and a security review of the final build.
 
-Hosting, owned domains, Linux/systemd/nginx behavior, Google and external SMTP, real
+Hosting, owned domains, Linux/systemd/tunnel behavior, Google and external SMTP, real
 supplier output, Stripe test-mode payments, customer policies and production signing
 still need configuration and a staging run.
 

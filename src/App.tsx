@@ -204,6 +204,9 @@ function App() {
     useState<PreparationSnapshot | null>(null);
   const [preparationRevision, setPreparationRevision] = useState(0);
   const [meetingObjective, setMeetingObjective] = useState("");
+  const [pendingRemoval, setPendingRemoval] = useState<
+    { kind: "client"; client: ClientWorkspace } | { kind: "brief" } | null
+  >(null);
   const [contextSelection, setContextSelection] = useState<{
     clientId: string;
     excludedPaths: string[];
@@ -495,6 +498,16 @@ function App() {
           listen<string>("meeting://provider-error", (event) =>
             setError(event.payload),
           ),
+          listen<{ sessionId: string; message: string }>(
+            "meeting://stream-recovered",
+            ({ payload }) => {
+              if (payload.sessionId === visibleSessionRef.current) {
+                setError((current) =>
+                  current === payload.message ? null : current,
+                );
+              }
+            },
+          ),
           ...(overlayWindow
             ? []
             : [
@@ -565,18 +578,13 @@ function App() {
   }
 
   async function removeClient(client: ClientWorkspace) {
-    if (
-      !window.confirm(
-        `Remove ${client.name} from Savvy?\n\nThis removes its local briefs and meeting history. The source folder and its files stay untouched.`,
-      )
-    ) {
-      return;
-    }
+    if (busy) return;
     setBusy(true);
     setError(null);
     try {
       await removeClientContext(client.id);
       await refreshDashboard();
+      setPendingRemoval(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -598,19 +606,14 @@ function App() {
   }
 
   async function removeCurrentBrief() {
-    if (
-      !window.confirm(
-        "Remove this brief from Savvy?\n\nThe meeting will run on general guidelines only. The Markdown file stays on disk.",
-      )
-    ) {
-      return;
-    }
+    if (busy) return;
     setBusy(true);
     setError(null);
     try {
       await removeBrief(activeClient?.id ?? null);
       await refreshDashboard();
       setPreparationRevision((value) => value + 1);
+      setPendingRemoval(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -1198,7 +1201,10 @@ function App() {
                 preparation={preparation}
                 onSelectClient={setActiveClientId}
                 onAddClient={addClient}
-                onRemoveClient={removeClient}
+                onRemoveClient={(client) => {
+                  setError(null);
+                  setPendingRemoval({ kind: "client", client });
+                }}
                 onSelectionChange={saveContextSelection}
                 objective={meetingObjective}
                 onObjectiveChange={setMeetingObjective}
@@ -1223,7 +1229,10 @@ function App() {
                   setReviewBriefId(preparation?.brief?.id ?? null)
                 }
                 onRefreshBrief={refreshCurrentBrief}
-                onRemoveBrief={removeCurrentBrief}
+                onRemoveBrief={() => {
+                  setError(null);
+                  setPendingRemoval({ kind: "brief" });
+                }}
                 onStartMeeting={startActiveMeeting}
                 busy={busy || Boolean(contextSelection)}
                 shortcut={
@@ -1251,6 +1260,30 @@ function App() {
           )}
         </div>
       </main>
+      {pendingRemoval && (
+        <ConfirmDialog
+          title={
+            pendingRemoval.kind === "client"
+              ? "Remove client?"
+              : "Unselect brief?"
+          }
+          confirm={busy ? "Removing…" : "Remove"}
+          busy={busy}
+          onCancel={() => setPendingRemoval(null)}
+          onConfirm={() => {
+            if (pendingRemoval.kind === "client")
+              void removeClient(pendingRemoval.client);
+            else void removeCurrentBrief();
+          }}
+        >
+          <p>
+            {pendingRemoval.kind === "client"
+              ? `Remove ${pendingRemoval.client.name} from Savvy? This removes its local briefs and meeting history. The source folder and its files stay untouched.`
+              : "The meeting will run on general guidelines only. The Markdown file stays on disk."}
+          </p>
+          {error && <p role="alert">{error}</p>}
+        </ConfirmDialog>
+      )}
       <AppFooter
         activity={briefProgress ? "Preparing brief" : undefined}
         settings={appSettings}
@@ -3473,9 +3506,9 @@ function SettingsView({
         <ManagedAccount />
         {settings.serviceMode === "managed" ? (
           <p>
-            Savvy supplies Deepgram Nova-3 transcription and Claude reasoning.
-            Personal provider settings below apply only when you select your own
-            providers.
+            Savvy supplies Deepgram Nova-3 transcription and Fireworks GLM-5.3
+            reasoning. Personal provider settings below apply only when you
+            select your own providers.
           </p>
         ) : null}
         <SettingsGroup title="Live Transcript">
@@ -4365,6 +4398,10 @@ function AppFooter({
       {activity ? (
         <span className="model-state">
           <i /> {activity}
+        </span>
+      ) : settings?.serviceMode === "managed" ? (
+        <span className="model-state">
+          <i /> Savvy assistance
         </span>
       ) : settings ? (
         <Dropdown

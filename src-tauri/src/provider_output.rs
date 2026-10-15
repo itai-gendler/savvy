@@ -123,6 +123,7 @@ mod tests {
                     std::time::Duration::from_secs(3),
                     None,
                 )
+                .map(|_| ())
             };
             assert!(result.is_err());
             assert!(std::fs::metadata(&path).unwrap().len() <= MAX_OUTPUT_BYTES as u64);

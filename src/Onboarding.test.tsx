@@ -931,3 +931,29 @@ describe("Onboarding off macOS", () => {
     expect(checkMicrophonePermission).not.toHaveBeenCalled();
   });
 });
+
+it("exposes the native sign-in link while waiting and removes it on cancellation", async () => {
+  resetBrowserDemoState({ onboardingCompleted: false });
+  const url = "https://auth.example.test/authorize?state=onboarding";
+  const begin = vi
+    .spyOn(appApi, "managedSignInBegin")
+    .mockResolvedValue({ flowId: "test", authorizationUrl: url });
+  const finish = vi
+    .spyOn(appApi, "managedSignInFinish")
+    .mockImplementation(() => new Promise(() => {}));
+  const cancel = vi.spyOn(appApi, "managedSignInCancel").mockResolvedValue();
+  const { unmount } = render(<Onboarding onComplete={vi.fn()} />);
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByLabelText("Sign-in link")).toHaveValue(url);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }));
+    await screen.findByRole("button", { name: "Sign in" });
+    expect(screen.queryByLabelText("Sign-in link")).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    begin.mockRestore();
+    finish.mockRestore();
+    cancel.mockRestore();
+    resetBrowserDemoState();
+  }
+});

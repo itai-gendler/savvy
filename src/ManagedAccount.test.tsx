@@ -26,6 +26,27 @@ import {
 describe("managed account fixtures", () => {
   beforeEach(() => resetBrowserDemoState());
   afterEach(() => vi.useRealTimers());
+  it("shows the verified email when an OTP account has an empty display name", async () => {
+    const account = await managedSignInFinish(await managedSignInBegin());
+    const read = vi.spyOn(api, "managedAccount").mockResolvedValue({
+      ...account,
+      identity: {
+        issuer: "https://staging.example.test",
+        subject: "otp-account",
+        name: "",
+        email: "owner@example.test",
+        emailVerified: true,
+      },
+    });
+    try {
+      render(<ManagedAccount />);
+      expect(
+        await screen.findByText(/Signed in as owner@example\.test/),
+      ).toBeInTheDocument();
+    } finally {
+      read.mockRestore();
+    }
+  });
   it("requires confirmation while the initial account lookup is unresolved", async () => {
     const account = await managedSignInFinish(await managedSignInBegin());
     let finishRead!: (value: typeof account) => void;
@@ -405,3 +426,38 @@ describe("managed account fixtures", () => {
     expect((await getAppSettings()).serviceMode).toBe("managed");
   });
 });
+
+it.each(["https://auth.example.test/authorize?state=account", ""])(
+  "keeps account sign-in cancellable and clears its fallback link (%s)",
+  async (url) => {
+    resetBrowserDemoState();
+    const begin = vi
+      .spyOn(api, "managedSignInBegin")
+      .mockResolvedValue({ flowId: "test", authorizationUrl: url });
+    let reject!: (reason: Error) => void;
+    const finish = vi.spyOn(api, "managedSignInFinish").mockImplementation(
+      () =>
+        new Promise((_, fail) => {
+          reject = fail;
+        }),
+    );
+    const { unmount } = render(<ManagedAccount />);
+    try {
+      const user = userEvent.setup();
+      await user.click(
+        await screen.findByRole("button", { name: "Sign in to Savvy" }),
+      );
+      await screen.findByRole("button", { name: "Cancel sign-in" });
+      if (url) expect(screen.getByLabelText("Sign-in link")).toHaveValue(url);
+      else
+        expect(screen.queryByLabelText("Sign-in link")).not.toBeInTheDocument();
+      await act(async () => reject(new Error("Sign-in expired")));
+      expect(screen.queryByLabelText("Sign-in link")).not.toBeInTheDocument();
+    } finally {
+      unmount();
+      begin.mockRestore();
+      finish.mockRestore();
+      resetBrowserDemoState();
+    }
+  },
+);

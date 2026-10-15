@@ -1530,7 +1530,7 @@ pub fn check_meeting_context(request: &savvy_providers::AdviceWireRequest) -> Re
 
 pub fn generate_advice(
     request: &savvy_providers::AdviceWireRequest,
-) -> Result<savvy_providers::ProviderAdvice, String> {
+) -> Result<(savvy_providers::ProviderAdvice, Option<String>), String> {
     let key = format!(
         "{}:{}:{}",
         request.session_id, request.generation_id, request.transcript_revision
@@ -1560,7 +1560,9 @@ pub fn generate_advice(
     {
         return Err("result_unavailable: stale advice".into());
     }
-    serde_json::from_value(body["advice"].clone()).map_err(|_| "invalid managed advice".into())
+    let advice = serde_json::from_value(body["advice"].clone())
+        .map_err(|_| "invalid managed advice".to_owned())?;
+    Ok((advice, body["model"].as_str().map(str::to_owned)))
 }
 pub fn active_request_keys() -> Vec<String> {
     ACTIVE_REQUESTS

@@ -23,6 +23,7 @@ import {
   contracts,
   briefPrompt,
   advicePrompt,
+  adviceOutputSchema,
   safeRelativePath,
   validateBrief,
   validateAdvice,
@@ -296,7 +297,10 @@ export function completeRequest(
       "recommendation canceled before completion",
     );
 }
-// Reserve 8,000 of the existing 24,000 input tokens for live transcript/ledger.
+// Reserve 8,000 input tokens for live transcript/ledger. Fireworks uses a
+// conservative byte bound, so leave enough room for a full generated brief.
+const adviceInputLimit = (state: ServiceState) =>
+  state.config.aiProvider === "fireworks" ? 40_000 : 24_000;
 export async function checkMeetingContext(
   state: ServiceState,
   account: bigint,
@@ -347,8 +351,8 @@ export async function checkMeetingContext(
       .immediate();
     await checkInput(
       state,
-      requestBody(state, advicePrompt(request), contracts.adviceSchema),
-      16_000,
+      requestBody(state, advicePrompt(request), adviceOutputSchema(request)),
+      adviceInputLimit(state) - 8_000,
       signal,
     );
     active();
@@ -437,9 +441,9 @@ export async function recommend(
       const upstream = requestBody(
         state,
         advicePrompt(body.request),
-        contracts.adviceSchema,
+        adviceOutputSchema(body.request),
       );
-      await checkInput(state, upstream, 24_000, signal);
+      await checkInput(state, upstream, adviceInputLimit(state), signal);
       const advice = validateAdvice(
         await generate(state, upstream, 1024, account, key, signal),
         body.request,
@@ -460,6 +464,7 @@ export async function recommend(
       await recordOutcome(state, false, account);
       return {
         advice,
+        model: state.config.aiModel,
         sessionId: id,
         generationId: body.request.generationId,
         transcriptRevision: body.request.transcriptRevision,

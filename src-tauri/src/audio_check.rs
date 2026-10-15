@@ -128,6 +128,8 @@ pub fn start(
                                 &url,
                                 &id,
                                 &token,
+                                None,
+                                None,
                                 &settings.transcription_language,
                                 lease,
                                 frames,

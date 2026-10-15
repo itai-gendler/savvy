@@ -239,10 +239,23 @@ struct RecommendationWork {
     active: Option<GenerationToken>,
     latest: Option<(PendingGeneration, String)>,
     cancellation: Option<tauri::async_runtime::JoinHandle<()>>,
+    managed_not_before: Option<tokio::time::Instant>,
 }
 
 #[cfg(target_os = "macos")]
 impl RecommendationWork {
+    fn next_start(&self, earliest: tokio::time::Instant) -> tokio::time::Instant {
+        if self
+            .latest
+            .as_ref()
+            .is_some_and(|(_, provider)| provider == "managed")
+        {
+            earliest.max(self.managed_not_before.unwrap_or(earliest))
+        } else {
+            earliest
+        }
+    }
+
     fn enqueue(&mut self, pending: PendingGeneration, provider: String) -> bool {
         self.latest = Some((pending, provider));
         let start_worker = !self.running;
@@ -650,7 +663,7 @@ fn audio_check_stop(id: String) -> Result<(), String> {
     }
 }
 #[tauri::command]
-fn audio_check_start(
+async fn audio_check_start(
     app: AppHandle,
     state: State<'_, AppState>,
     transcribe: bool,
@@ -658,6 +671,9 @@ fn audio_check_start(
 ) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
+        if !tauri_plugin_macos_permissions::check_microphone_permission().await {
+            return Err("Allow Savvy microphone access in System Settings > Privacy & Security > Microphone, then quit and reopen Savvy before checking audio again.".into());
+        }
         let operation = state.app_operation.lock().map_err(|_| "operation lock")?;
         if *operation {
             return Err("Savvy is restarting.".into());
@@ -4037,7 +4053,7 @@ fn spawn_managed_stream(
                 Err(error) => {
                     let terminal = is_terminal_managed_failure(&error);
                     if terminal {
-                        pause_managed_assistance(app.clone(), stream.session_id);
+                        finish_managed_failure(app.clone(), stream.session_id, &error);
                     }
                     let _ = app.emit(
                         "meeting://provider-error",
@@ -4053,10 +4069,53 @@ fn spawn_managed_stream(
                     continue;
                 }
             };
+            let (token_sender, token_updates) = tokio::sync::watch::channel(Ok(token.clone()));
+            let mut refresh_tasks = tokio::task::JoinSet::new();
+            refresh_tasks.spawn(async move {
+                let mut last_token = token_sender.borrow().as_ref().unwrap().clone();
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    let refreshed =
+                        tauri::async_runtime::spawn_blocking(managed::relay_credentials)
+                            .await
+                            .map_err(|error| error.to_string())
+                            .and_then(|result| result);
+                    match refreshed {
+                        Ok((_, next)) if next != last_token => {
+                            last_token = next.clone();
+                            if token_sender.send(Ok(next)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) if is_terminal_managed_failure(&error) => {
+                            let _ = token_sender.send(Err(error));
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            let (connected, connection_ready) = tokio::sync::oneshot::channel();
+            let recovery_app = app.clone();
+            let recovery_session = stream.session_id;
+            refresh_tasks.spawn(async move {
+                if connection_ready.await.is_ok() {
+                    let label = match source {
+                        AudioSource::Microphone => "microphone",
+                        AudioSource::System => "system audio",
+                    };
+                    let _ = recovery_app.emit("meeting://stream-recovered", serde_json::json!({
+                        "sessionId": recovery_session,
+                        "message": format!("Live {label} transcription interrupted; reconnecting."),
+                    }));
+                }
+            });
             let result = savvy_transcription::stream_managed_transcription(
                 &url,
                 &stream.session_id.to_string(),
                 &token,
+                Some(token_updates),
+                Some(connected),
                 &stream.language,
                 session.lease_version,
                 frames.clone(),
@@ -4065,6 +4124,7 @@ fn spawn_managed_stream(
                 source,
             )
             .await;
+            drop(refresh_tasks);
             let Err(error) = result else {
                 break;
             };
@@ -4077,7 +4137,7 @@ fn spawn_managed_stream(
                 AudioSource::System => "system audio",
             };
             if is_terminal_managed_failure(&message) {
-                pause_managed_assistance(app.clone(), stream.session_id);
+                finish_managed_failure(app.clone(), stream.session_id, &message);
                 log::warn!("{label} managed transcription stopped: {message}");
                 let _ = app.emit(
                     "meeting://provider-error",
@@ -4101,6 +4161,17 @@ fn spawn_managed_stream(
             }
         }
     });
+}
+
+#[cfg(target_os = "macos")]
+fn finish_managed_failure(app: AppHandle, id: Uuid, message: &str) {
+    if message.contains("session_ended") {
+        tauri::async_runtime::spawn_blocking(move || {
+            let _ = run_app_operation(&app, |app, state| stop_live_meeting(app, state, id));
+        });
+    } else {
+        pause_managed_assistance(app, id);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -4129,23 +4200,29 @@ fn is_terminal_managed_failure(message: &str) -> bool {
         "quota_exhausted",
         "sign_in_required",
         "session_conflict",
+        "session_ended",
         "payment_pending",
         "assistance_paused",
+        "capture_unavailable",
     ]
     .iter()
     .any(|code| message.contains(code))
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn managed_stream_message(message: &str, label: &str) -> String {
-    if message.contains("quota_exhausted") {
+    if message.contains("capture_unavailable") {
+        format!("Savvy assistance paused: {label} capture stopped supplying audio. Unlock your Mac, check audio permissions, then resume the meeting to restart capture.")
+    } else if message.contains("quota_exhausted") {
         "Savvy assistance paused: your included time ran out. Add time, then explicitly resume the meeting.".to_owned()
     } else if message.contains("sign_in_required") {
         "Savvy assistance paused: sign in to your Savvy account again in Settings.".to_owned()
     } else if message.contains("assistance_paused") {
         "Savvy assistance paused by the service. Resume when it is available; your remaining time is preserved.".to_owned()
+    } else if message.contains("session_ended") {
+        "This meeting ended on the service. Your history is saved; start a new meeting to continue."
+            .to_owned()
     } else if message.contains("session_conflict") {
-        "Savvy assistance paused: this account already has an assisted meeting running.".to_owned()
+        "Savvy could not resume this meeting. Check whether another assisted meeting is running, or stop this meeting and start a new one.".to_owned()
     } else {
         format!("Live {label} transcription stopped: {message}")
     }
@@ -4512,7 +4589,15 @@ async fn resume_meeting(session_id: String, app: AppHandle) -> Result<MeetingSes
             })?;
             if managed {
                 // No application or capture lock is held during network requests.
-                managed::resume_session(&session_id)?;
+                if let Err(error) = managed::resume_session(&session_id) {
+                    if error.contains("session_ended") {
+                        run_app_operation(&app, |app, state| {
+                            stop_live_meeting(app, state, parsed)
+                        })?;
+                        return Err(managed_stream_message(&error, "meeting"));
+                    }
+                    return Err(error);
+                }
                 if let Err(error) = managed::prepare_session(&session_id) {
                     let _ = managed::stop_session(&session_id);
                     return Err(error);
@@ -4770,7 +4855,7 @@ impl CodexAppServer {
             std::env::temp_dir().join(format!("savvy-codex-app-server-{}", Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).map_err(|error| error.to_string())?;
         let mut command = std::process::Command::new(binary);
-        provider_output::limit_files(&mut command);
+        // Bound IPC below; a process-wide file limit also blocks Codex's existing runtime databases.
         let mut child = command
             .args([
                 "app-server",
@@ -5171,23 +5256,37 @@ fn spawn_provider_enhancement(app: AppHandle, pending: PendingGeneration, provid
         let mut next_start = tokio::time::Instant::now();
         loop {
             // Coalesce bursts during the gap instead of allocating a task per turn.
+            next_start = RECOMMENDATION_WORK
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .next_start(next_start);
             tokio::time::sleep_until(next_start).await;
             let next = {
                 let mut work = RECOMMENDATION_WORK
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
+                let now = tokio::time::Instant::now();
+                if work.next_start(now) > now {
+                    continue;
+                }
                 work.next()
             };
             let Some((pending, provider)) = next else {
                 return;
             };
             next_start = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+            let managed = provider == "managed";
             run_provider_enhancement(app.clone(), pending, provider).await;
             let cancellation = {
                 let mut work = RECOMMENDATION_WORK
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
                 work.active = None;
+                if managed {
+                    // The service requires five seconds between advice requests; retain the gap across worker restarts.
+                    work.managed_not_before =
+                        Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+                }
                 work.cancellation.take()
             };
             if let Some(cancellation) = cancellation {
@@ -5396,6 +5495,7 @@ fn generate_provider_recommendation(
     let recommendation_id = pending.recommendation_id;
     let request = pending.request;
     let prompt = build_recommendation_prompt(&request)?;
+    let mut actual_model = Some(model.to_owned());
     let advice = if provider == "managed" {
         let current = app
             .state::<AppState>()
@@ -5409,7 +5509,9 @@ fn generate_provider_recommendation(
         if !current {
             return Err("result_unavailable: generation canceled before dispatch".into());
         }
-        managed::generate_advice(&request.to_wire())?
+        let (advice, managed_model) = managed::generate_advice(&request.to_wire())?;
+        actual_model = managed_model;
+        advice
     } else if provider == "codex" {
         let server = codex_server(app)?;
         match server.generate::<ProviderAdvice>(
@@ -5453,7 +5555,7 @@ fn generate_provider_recommendation(
             token,
         )?
     };
-    resolve_provider_advice(recommendation_id, request, advice, provider, model)
+    resolve_provider_advice(recommendation_id, request, advice, provider, actual_model)
 }
 
 /// The model has started answering: reading the notes is over, composing has begun.
@@ -5494,7 +5596,7 @@ fn resolve_provider_advice(
     request: RecommendationRequest,
     advice: ProviderAdvice,
     provider: &str,
-    model: &str,
+    actual_model: Option<String>,
 ) -> Result<GeneratedRecommendation, String> {
     advice.validate_size()?;
     if advice.action == "skip" {
@@ -5591,7 +5693,7 @@ fn resolve_provider_advice(
         transcript_revision: request.transcript_revision,
         context_pack_hash: request.context_pack_hash,
         provider: Some(provider.into()),
-        model: Some(model.into()),
+        model: actual_model,
         lifecycle: RecommendationLifecycle::Completed,
     };
     validate_recommendation(&recommendation, &allowed_sources, &allowed_turns)
@@ -5637,7 +5739,6 @@ fn run_codex_json<T: DeserializeOwned>(
     let temp_dir = std::env::temp_dir().join(format!("savvy-codex-{request_id}"));
     create_private_directory(&temp_dir).map_err(|error| error.to_string())?;
     let schema_path = temp_dir.join("schema.json");
-    let output_path = temp_dir.join(format!("savvy-codex-{request_id}.output.json"));
     write_private_file(&schema_path, schema.as_bytes()).map_err(|error| error.to_string())?;
 
     let run = (|| {
@@ -5676,26 +5777,23 @@ fn run_codex_json<T: DeserializeOwned>(
         command
             .arg("--output-schema")
             .arg(&schema_path)
-            .arg("--output-last-message")
-            .arg(&output_path)
             .arg("-")
             .current_dir(&temp_dir)
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        run_provider_process(
+        let output = run_provider_process(
             command,
             prompt,
             "Codex",
             std::time::Duration::from_secs(timeout_seconds),
             cancellation,
         )?;
-        serde_json::from_slice(&provider_output::read_file(&output_path)?)
+        serde_json::from_slice(&output)
             .map_err(|error| format!("Codex returned invalid {result_name}: {error}"))
     })();
 
     let _ = fs::remove_file(schema_path);
-    let _ = fs::remove_file(output_path);
     let _ = fs::remove_dir(temp_dir);
     run
 }
@@ -5961,9 +6059,12 @@ fn run_provider_process(
     provider: &str,
     timeout: std::time::Duration,
     mut cancellation: Option<tokio::sync::watch::Receiver<bool>>,
-) -> Result<(), String> {
-    use tokio::io::AsyncWriteExt;
-    provider_output::limit_files(&mut command);
+) -> Result<Vec<u8>, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // Codex updates shared runtime databases; bound its response pipe instead of every file it opens.
+    if provider != "Codex" {
+        provider_output::limit_files(&mut command);
+    }
     tauri::async_runtime::block_on(async {
         if cancellation.as_ref().is_some_and(|signal| *signal.borrow()) {
             return Err("brief_cancelled: Brief generation was cancelled.".into());
@@ -5975,15 +6076,31 @@ fn run_provider_process(
             .map_err(|error| format!("failed to start {provider}: {error}"))?;
         let operation = async {
             let mut stdin = child.stdin.take().ok_or("provider stdin is unavailable")?;
+            let stdout = child.stdout.take();
             stdin
                 .write_all(prompt.as_bytes())
                 .await
                 .map_err(|error| error.to_string())?;
             drop(stdin);
-            let status = child.wait().await.map_err(|error| error.to_string())?;
+            let read_output = async {
+                let mut output = Vec::new();
+                if let Some(stdout) = stdout {
+                    stdout
+                        .take(provider_output::MAX_OUTPUT_BYTES as u64 + 1)
+                        .read_to_end(&mut output)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    if output.len() > provider_output::MAX_OUTPUT_BYTES {
+                        return Err("Provider output exceeds 4 MiB".to_owned());
+                    }
+                }
+                Ok(output)
+            };
+            let wait = async { child.wait().await.map_err(|error| error.to_string()) };
+            let (status, output) = tokio::try_join!(wait, read_output)?;
             status
                 .success()
-                .then_some(())
+                .then_some(output)
                 .ok_or_else(|| format!("{provider} exited with {status}"))
         };
         let cancelled = async {
@@ -6408,6 +6525,24 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unavailable_capture_pauses_managed_assistance_and_explains_restart() {
+        assert!(super::is_terminal_managed_failure("capture_unavailable"));
+        let message = super::managed_stream_message("capture_unavailable", "system audio");
+        assert!(message.contains("system audio capture"));
+        assert!(message.contains("resume the meeting"));
+    }
+
+    #[test]
+    fn ended_managed_sessions_do_not_offer_resume_or_claim_another_meeting() {
+        assert!(super::is_terminal_managed_failure(
+            "session_ended: meeting ended"
+        ));
+        let message = super::managed_stream_message("session_ended: meeting ended", "meeting");
+        assert!(message.contains("start a new meeting"));
+        assert!(!message.contains("Resume"));
+        assert!(!message.contains("already has"));
+    }
     use super::*;
 
     #[test]
@@ -6699,7 +6834,19 @@ mod tests {
         assert_eq!(latest.token.generation_id, 10_000);
         assert!(work.next().is_none());
         assert!(!work.running && work.active.is_none());
+        let now = tokio::time::Instant::now();
+        let managed_deadline = now + std::time::Duration::from_secs(5);
+        work.managed_not_before = Some(managed_deadline);
+        assert!(work.enqueue(pending(10_001), "managed".into()));
+        assert_eq!(work.next_start(now), managed_deadline);
+        assert_eq!(
+            work.next_start(managed_deadline + std::time::Duration::from_secs(1)),
+            managed_deadline + std::time::Duration::from_secs(1)
+        );
+        work.next();
+        assert!(work.next().is_none());
         assert!(work.enqueue(pending(10_001), "codex".into()));
+        assert_eq!(work.next_start(now), now);
         assert_eq!(work.next().unwrap().0.token.generation_id, 10_001);
     }
 
@@ -7814,6 +7961,41 @@ mod one_shot_provider_tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         command
+    }
+
+    #[test]
+    fn codex_response_pipe_is_bounded_without_limiting_shared_runtime_files() {
+        let directory = std::env::temp_dir().join(format!("savvy-codex-output-{}", Uuid::new_v4()));
+        create_private_directory(&directory).unwrap();
+        let cache = directory.join("runtime.db");
+        let mut command = fake(
+            "import sys; sys.stdin.read(); open(sys.argv[1],'wb').write(b'x'*(5*1024*1024)); print('{\"ok\":true}')",
+            &cache,
+        );
+        command.stdout(Stdio::piped());
+        let output =
+            run_provider_process(command, "fixture", "Codex", Duration::from_secs(10), None)
+                .unwrap();
+        assert_eq!(output, b"{\"ok\":true}\n");
+        assert_eq!(fs::metadata(&cache).unwrap().len(), 5 * 1024 * 1024);
+
+        let pid = directory.join("child.pid");
+        let mut command = fake(
+            "import os,sys,time; sys.stdin.read(); open(sys.argv[1],'w').write(str(os.getpid())); sys.stdout.buffer.write(b'x'*(5*1024*1024)); sys.stdout.flush(); time.sleep(30)",
+            &pid,
+        );
+        command.stdout(Stdio::piped());
+        let error =
+            run_provider_process(command, "fixture", "Codex", Duration::from_secs(10), None)
+                .unwrap_err();
+        assert_eq!(error, "Provider output exceeds 4 MiB");
+        assert!(!Command::new("/bin/kill")
+            .args(["-0", fs::read_to_string(&pid).unwrap().trim()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

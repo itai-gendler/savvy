@@ -98,6 +98,35 @@ describe("App", () => {
     window.history.replaceState({}, "", "/");
   });
 
+  it("shows managed assistance instead of a personal-provider model selector", async () => {
+    const settings = await api.getAppSettings();
+    await api.updateAppSettings({
+      ...settings,
+      serviceMode: "managed",
+      onboardingCompleted: true,
+    });
+    const view = render(<App />);
+    await waitFor(() =>
+      expect(view.container.querySelector(".app-footer")).toHaveTextContent(
+        "Savvy assistance",
+      ),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Reasoning model" }),
+    ).not.toBeInTheDocument();
+    view.unmount();
+
+    await api.updateAppSettings({
+      ...settings,
+      serviceMode: "byok",
+      onboardingCompleted: true,
+    });
+    render(<App />);
+    expect(
+      await screen.findByRole("button", { name: "Reasoning model" }),
+    ).toHaveTextContent("GPT-5.6 Sol");
+  });
+
   it.each([false, true])(
     "recovers dashboard initialization in overlay=%s",
     async (overlay) => {
@@ -639,6 +668,56 @@ describe("App", () => {
     expect(view.container.querySelector(".ov-stage")).toBeNull();
     expect(meter).not.toHaveBeenCalled();
     view.unmount();
+  });
+
+  it("clears only the recovered stream warning for the current meeting", async () => {
+    const snapshot = await api.getDashboard();
+    const settings = await api.getAppSettings();
+    const preparation = await api.getPreparationSnapshot(null);
+    const session = await api.startMeeting(null, null);
+    vi.spyOn(api, "getDashboard").mockResolvedValue(snapshot);
+    vi.spyOn(api, "getAppSettings").mockResolvedValue(settings);
+    vi.spyOn(api, "getAppStatus").mockResolvedValue({
+      version: "0.1.3",
+      platform: "macos",
+    });
+    vi.spyOn(api, "getPreparationSnapshot").mockResolvedValue(preparation);
+    vi.spyOn(api, "getAudioLevel").mockResolvedValue(0);
+    vi.mocked(listen).mockClear().mockResolvedValue(vi.fn());
+    window.__TAURI_INTERNALS__ = {};
+    render(<App />);
+    await waitFor(() =>
+      expect(listen).toHaveBeenCalledWith(
+        "meeting://stream-recovered",
+        expect.any(Function),
+      ),
+    );
+    const emit = (name: string, payload: unknown) =>
+      act(() => {
+        const handler = vi
+          .mocked(listen)
+          .mock.calls.find(([event]) => event === name)![1];
+        handler({ event: name, id: 1, payload });
+      });
+    const message = "Live microphone transcription interrupted; reconnecting.";
+    emit("meeting://session", session);
+    emit("meeting://provider-error", message);
+    expect(screen.getByText(message)).toBeVisible();
+    emit("meeting://stream-recovered", {
+      sessionId: "previous-meeting",
+      message,
+    });
+    expect(screen.getByText(message)).toBeVisible();
+    emit("meeting://stream-recovered", {
+      sessionId: session.id,
+      message: "Live system audio transcription interrupted; reconnecting.",
+    });
+    expect(screen.getByText(message)).toBeVisible();
+    emit("meeting://stream-recovered", { sessionId: session.id, message });
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+    emit("meeting://capture-error", "Microphone disconnected");
+    emit("meeting://stream-recovered", { sessionId: session.id, message });
+    expect(screen.getByText("Microphone disconnected")).toBeVisible();
   });
 
   it("bounds microphone polling and stops it on visibility changes, pause, and unmount", async () => {
@@ -1371,31 +1450,64 @@ describe("App", () => {
     ).not.toBeInTheDocument();
   }, 15_000);
 
-  it("can remove the brief so a meeting runs with none at all", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockImplementation(() => true);
-    try {
+  it.each(["client", "brief"] as const)(
+    "requires explicit confirmation before removing a %s",
+    async (kind) => {
+      const remove = vi.spyOn(
+        api,
+        kind === "client" ? "removeClientContext" : "removeBrief",
+      );
       render(<App />);
-      // The demo brief belongs to the client scope, so select the client first.
       fireEvent.click(
         await screen.findByRole("button", { name: "Meeting context" }),
       );
       fireEvent.click(await screen.findByRole("option", { name: /Northstar/ }));
-      fireEvent.click(
-        await screen.findByRole("button", { name: "Unselect brief" }),
-      );
-
-      // Removing it must leave the scope with no brief, not fall back to an
-      // earlier version.
-      await waitFor(() => {
-        expect(
-          screen.queryByRole("button", { name: "More brief actions" }),
-        ).not.toBeInTheDocument();
+      if (kind === "client")
+        fireEvent.click(
+          await screen.findByRole("button", { name: "Show documents" }),
+        );
+      const trigger = await screen.findByRole("button", {
+        name: kind === "client" ? "Remove client" : "Unselect brief",
       });
-      expect(confirm).toHaveBeenCalled();
-    } finally {
-      confirm.mockRestore();
-    }
-  }, 15_000);
+      for (const cancel of ["button", "escape"]) {
+        trigger.focus();
+        fireEvent.click(trigger);
+        const dialog = await screen.findByRole("dialog", {
+          name: kind === "client" ? "Remove client?" : "Unselect brief?",
+        });
+        expect(
+          within(dialog).getByRole("button", { name: "Cancel" }),
+        ).toHaveFocus();
+        expect(remove).not.toHaveBeenCalled();
+        if (cancel === "button")
+          fireEvent.click(
+            within(dialog).getByRole("button", { name: "Cancel" }),
+          );
+        else fireEvent(dialog, new Event("cancel", { cancelable: true }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(trigger).toHaveFocus();
+        expect(remove).not.toHaveBeenCalled();
+      }
+      fireEvent.click(trigger);
+      fireEvent.click(
+        within(await screen.findByRole("dialog")).getByRole("button", {
+          name: "Remove",
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(
+        (
+          await api.getPreparationSnapshot(
+            kind === "client" ? null : "demo-client",
+          )
+        ).brief,
+      ).toBeNull();
+    },
+    15_000,
+  );
 
   it.each([false, true])(
     "restores shortcut registration across unmount, resolved=%s",
