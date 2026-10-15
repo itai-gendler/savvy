@@ -1,3 +1,4 @@
+import BrowserSignInLink from "./BrowserSignInLink";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { transcriptionModels } from "./lib/transcriptionModels";
 import { invoke } from "@tauri-apps/api/core";
@@ -102,6 +103,7 @@ export default function Onboarding({ onComplete }: { onComplete: () => void }) {
     [],
   );
   const [step, setStep] = useState<Step>("path");
+  const [signInUrl, setSignInUrl] = useState("");
   const [isMacos, setIsMacos] = useState(false);
   const [microphone, setMicrophone] = useState<PermissionStatus>("checking");
   const [screen, setScreen] = useState<PermissionStatus>("checking");
@@ -442,6 +444,7 @@ export default function Onboarding({ onComplete }: { onComplete: () => void }) {
     try {
       const authorization = await managedSignInBegin(createAccount);
       if (generation !== signInGeneration.current) return;
+      setSignInUrl(authorization.authorizationUrl);
       await managedSignInFinish(authorization);
       if (generation !== signInGeneration.current) return;
       const settings = await getAppSettings();
@@ -456,7 +459,10 @@ export default function Onboarding({ onComplete }: { onComplete: () => void }) {
         setStep("path");
       }
     } finally {
-      if (generation === signInGeneration.current) setBusy(false);
+      if (generation === signInGeneration.current) {
+        setBusy(false);
+        setSignInUrl("");
+      }
     }
   }
   if (step === "waiting")
@@ -466,12 +472,14 @@ export default function Onboarding({ onComplete }: { onComplete: () => void }) {
           Continue in your browser. Savvy will verify your account before
           continuing.
         </p>
+        <BrowserSignInLink url={signInUrl} />
         <button
           className="button secondary"
           onClick={() =>
             void managedSignInCancel()
               .then(() => {
                 signInGeneration.current += 1;
+                setSignInUrl("");
                 setStep("path");
                 setBusy(false);
               })

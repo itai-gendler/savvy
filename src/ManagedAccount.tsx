@@ -1,3 +1,4 @@
+import BrowserSignInLink from "./BrowserSignInLink";
 import ConfirmDialog from "./ConfirmDialog";
 import catalog from "../config/managed-catalog.json";
 import { useCallback, useEffect, useState, useRef } from "react";
@@ -95,6 +96,7 @@ export default function ManagedAccount({
     } finally {
       operationPending.current = false;
       setBusy(false);
+      setCode("");
     }
   }
   const offers = account?.catalog ?? catalog;
@@ -195,6 +197,7 @@ export default function ManagedAccount({
           void run(async () => {
             if (!account) {
               const authorization = await managedSignInBegin();
+              setCode(authorization.authorizationUrl);
               setAccount(await managedSignInFinish(authorization));
             }
             const settings = await getAppSettings();
@@ -209,6 +212,7 @@ export default function ManagedAccount({
             ? "Reopen pending checkout"
             : "Continue to checkout"}
       </button>
+      {busy && !account && <BrowserSignInLink url={code} />}
       {busy && !account && (
         <button
           className="button secondary"
@@ -278,7 +282,7 @@ export default function ManagedAccount({
             onClick={() =>
               void run(async () => {
                 const authorization = await managedSignInBegin();
-                setCode("waiting");
+                setCode(authorization.authorizationUrl);
                 setAccount(await managedSignInFinish(authorization));
                 setCode("");
               })
@@ -286,8 +290,9 @@ export default function ManagedAccount({
           >
             Sign in to Savvy
           </button>
-          {code && (
+          {busy && (
             <>
+              <BrowserSignInLink url={code} />
               <p role="status">
                 Continue sign-in in your browser. Your meeting stays paused.
               </p>

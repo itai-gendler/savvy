@@ -426,3 +426,38 @@ describe("managed account fixtures", () => {
     expect((await getAppSettings()).serviceMode).toBe("managed");
   });
 });
+
+it.each(["https://auth.example.test/authorize?state=account", ""])(
+  "keeps account sign-in cancellable and clears its fallback link (%s)",
+  async (url) => {
+    resetBrowserDemoState();
+    const begin = vi
+      .spyOn(api, "managedSignInBegin")
+      .mockResolvedValue({ flowId: "test", authorizationUrl: url });
+    let reject!: (reason: Error) => void;
+    const finish = vi.spyOn(api, "managedSignInFinish").mockImplementation(
+      () =>
+        new Promise((_, fail) => {
+          reject = fail;
+        }),
+    );
+    const { unmount } = render(<ManagedAccount />);
+    try {
+      const user = userEvent.setup();
+      await user.click(
+        await screen.findByRole("button", { name: "Sign in to Savvy" }),
+      );
+      await screen.findByRole("button", { name: "Cancel sign-in" });
+      if (url) expect(screen.getByLabelText("Sign-in link")).toHaveValue(url);
+      else
+        expect(screen.queryByLabelText("Sign-in link")).not.toBeInTheDocument();
+      await act(async () => reject(new Error("Sign-in expired")));
+      expect(screen.queryByLabelText("Sign-in link")).not.toBeInTheDocument();
+    } finally {
+      unmount();
+      begin.mockRestore();
+      finish.mockRestore();
+      resetBrowserDemoState();
+    }
+  },
+);
