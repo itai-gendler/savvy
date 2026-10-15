@@ -666,7 +666,9 @@ async function processEventInner(
             "UPDATE checkouts SET price_id=? WHERE account_id=? AND request_key=? AND price_id IS NULL",
           ).run(price, account, key);
           const origin =
-            object.payment_status === "no_payment_required"
+            object.status === "complete" &&
+            object.amount_total === 0 &&
+            object.payment_intent === null
               ? objectId
               : stripeId(object.payment_intent);
           grantPurchase(state, account, origin, "pack", offer, now, null);
