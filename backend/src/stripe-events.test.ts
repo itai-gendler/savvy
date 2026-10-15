@@ -1287,32 +1287,37 @@ test(
   },
 );
 
-test("zero-cost completed pack checkout grants once without a PaymentIntent", async (t) => {
-  const h = await fixture(t);
-  h.purchase("free");
-  const value = {
-    ...pack("free", "unused"),
-    payment_intent: null,
-    payment_status: "no_payment_required",
-    amount_total: 0,
-  };
-  h.objects.set("/v1/checkout/sessions/cs_free", value);
-  for (const id of ["evt_free", "evt_free", "evt_free_replay"])
+for (const paymentStatus of ["paid", "no_payment_required"]) {
+  test(`zero-total ${paymentStatus} pack checkout grants once without a PaymentIntent`, async (t) => {
+    const h = await fixture(t);
+    h.purchase("free");
+    const value = {
+      ...pack("free", "unused"),
+      payment_intent: null,
+      payment_status: paymentStatus,
+      amount_total: 0,
+    };
+    h.objects.set("/v1/checkout/sessions/cs_free", value);
+    for (const id of ["evt_free", "evt_free", "evt_free_replay"])
+      assert.equal(
+        (await h.deliver(event(id, "checkout.session.completed", "cs_free")))
+          .status,
+        200,
+      );
     assert.equal(
-      (await h.deliver(event(id, "checkout.session.completed", "cs_free")))
-        .status,
-      200,
+      balance(h.db, 1n, h.state.clock()).meetingMsAvailable,
+      10_800_000n,
     );
-  assert.equal(
-    balance(h.db, 1n, h.state.clock()).meetingMsAvailable,
-    10_800_000n,
-  );
-  assert.equal(accountSummary(h.db, 1n, h.state.clock()).paymentPending, false);
-  assert.deepEqual(
-    h.db.prepare("SELECT count(*) AS n FROM allowance_grants").get(),
-    { n: 1n },
-  );
-});
+    assert.equal(
+      accountSummary(h.db, 1n, h.state.clock()).paymentPending,
+      false,
+    );
+    assert.deepEqual(
+      h.db.prepare("SELECT count(*) AS n FROM allowance_grants").get(),
+      { n: 1n },
+    );
+  });
+}
 
 test("no-payment-required status cannot grant an incomplete or nonzero checkout", async (t) => {
   const h = await fixture(t);
