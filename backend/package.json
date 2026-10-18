@@ -45,11 +45,5 @@
     "tsx": "4.23.13",
     "typescript": "7.0.2",
     "vite": "^7.3.6"
-  },
-  "pnpm": {
-    "overrides": {
-      "source-map-js": "1.2.2",
-      "nodemailer": "10.0.9"
-    }
   }
 }
