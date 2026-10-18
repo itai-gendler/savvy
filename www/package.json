@@ -6,15 +6,15 @@
   "scripts": {
     "dev": "next dev -p 3012",
     "build": "next build",
-    "start": "pnpm dlx wrangler@4.127.1 dev",
+    "start": "pnpm dlx --allow-build=esbuild --allow-build=workerd wrangler@4.127.1 dev",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "typecheck": "tsc --noEmit",
-    "deploy": "pnpm build && pnpm dlx wrangler@4.127.1 deploy",
-    "deploy:check": "pnpm dlx wrangler@4.127.1 deploy --dry-run"
+    "deploy": "pnpm build && pnpm dlx --allow-build=esbuild --allow-build=workerd wrangler@4.127.1 deploy",
+    "deploy:check": "pnpm dlx --allow-build=esbuild --allow-build=workerd wrangler@4.127.1 deploy --dry-run"
   },
   "dependencies": {
-    "next": "16.3.4",
+    "next": "16.3.8",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
@@ -28,5 +28,10 @@
     "tailwindcss": "4.3.3",
     "typescript": "5.9.3"
   },
-  "packageManager": "pnpm@10.34.5"
+  "packageManager": "pnpm@10.34.5",
+  "pnpm": {
+    "overrides": {
+      "source-map-js": "1.2.2"
+    }
+  }
 }

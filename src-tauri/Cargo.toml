@@ -1,6 +1,6 @@
 [package]
 name = "savvy"
-version = "0.1.2"
+version = "0.1.3"
 description = "Savvy, a meeting assistant grounded in your own sources"
 authors = ["Alamas Labs, Inc."]
 repository = "https://github.com/jamalavedra/savvy"
@@ -20,6 +20,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+local-integration = []
+
 [dependencies]
 tauri = { version = "2", features = ["image-png", "macos-private-api", "protocol-asset", "tray-icon"] }
 tauri-plugin-dialog = "2"
@@ -35,11 +38,15 @@ savvy-meeting = { path = "../crates/meeting" }
 savvy-providers = { path = "../crates/providers" }
 savvy-recommendations = { path = "../crates/recommendations" }
 savvy-storage = { path = "../crates/storage" }
+reqwest = { version = "0.13.4", features = ["json", "form", "blocking"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 uuid.workspace = true
 tauri-plugin-updater = "2.10.1"
+tauri-plugin-deep-link = "2"
+base64 = "0.22"
+tokio = { workspace = true, features = ["process", "io-util"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 savvy-audio = { path = "../crates/audio" }
@@ -50,7 +57,11 @@ tokio.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
+libc = "0.2"
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61.3", features = ["Win32_Security_Credentials", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }

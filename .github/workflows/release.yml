@@ -3,8 +3,12 @@ run-name: "Release from ${{ github.ref_name }}"
 
 on: workflow_dispatch
 
+permissions:
+  contents: read
+
 jobs:
   create-release:
+    if: github.repository == 'jamalavedra/savvy' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -16,6 +20,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Get version from tauri.conf.json
         id: get-version
@@ -38,6 +43,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: `v${process.env.VERSION}`,
+              target_commitish: context.sha,
               name: `v${process.env.VERSION}`,
               draft: true,
               prerelease: false,
@@ -63,6 +69,7 @@ jobs:
             target: "x86_64-pc-windows-msvc"
 
     uses: ./.github/workflows/build.yml
+    secrets: inherit
     with:
       platform: ${{ matrix.platform }}
       target: ${{ matrix.target }}
@@ -73,12 +80,37 @@ jobs:
       # Releases always build from scratch — never restore the Rust cache, so a
       # stale cached object can never be linked into a shipped artifact.
       no-cache: true
-    secrets:
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+  public-updater:
+    needs: [create-release, publish-tauri]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      # The action emits API URLs, which consume anonymous GitHub rate limits.
+      - name: Use public release downloads in the updater manifest
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release-id }}
+        with:
+          script: |
+            const { publicUpdater } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/public-updater.mjs`);
+            const release_id = Number(process.env.RELEASE_ID);
+            const repo = context.repo;
+            const { data: release } = await github.rest.repos.getRelease({ ...repo, release_id });
+            const asset = release.assets.find(item => item.name === 'latest.json');
+            if (!asset) throw new Error('Missing updater manifest');
+            const { data } = await github.rest.repos.getReleaseAsset({
+              ...repo, asset_id: asset.id, headers: { accept: 'application/octet-stream' },
+            });
+            const manifest = JSON.parse(Buffer.from(data).toString());
+            const updated = Buffer.from(JSON.stringify(publicUpdater(manifest, release.assets), null, 2));
+            await github.rest.repos.deleteReleaseAsset({ ...repo, asset_id: asset.id });
+            await github.rest.repos.uploadReleaseAsset({
+              ...repo, release_id, name: 'latest.json', data: updated,
+              headers: { 'content-type': 'application/json', 'content-length': updated.length },
+            });

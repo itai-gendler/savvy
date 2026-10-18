@@ -2,6 +2,14 @@
 
 Savvy is a meeting assistant for macOS and Windows 11 x64. It prepares a brief from your own source documents, then offers source-grounded guidance during a live conversation. Preparation can be scoped to a specific client or kept general.
 
+## Choose your setup
+
+Use personal providers or optional Savvy managed assistance in the same MIT-licensed desktop app. Personal setup connects your transcription account and signed-in model CLI. Managed setup uses browser sign-in with Google or an emailed code. Rust handles PKCE and stores refresh credentials in macOS Keychain. Checkout and billing management are Stripe-hosted.
+
+Managed offer amounts, allowances and expiry rules live in [the shared catalog](config/managed-catalog.json). Managed prices pay for Deepgram transcription and Fireworks GLM-5.3 usage on your behalf, plus Savvy's margin. With personal providers you pay those providers directly and nothing to Savvy. The account screen shows server-provided offers, remaining usage and pending purchases. A browser return never confirms payment. Adding allowance requires you to explicitly resume an exhausted meeting. Signing out or switching to personal providers does not cancel a subscription.
+
+Managed audio passes through Savvy to Deepgram; selected brief evidence and meeting context pass through Savvy to Fireworks GLM-5.3. Documents and history remain on your Mac. The provider descriptions below describe personal-provider setup. See the [backend guide](backend/README.md) and [deployment guide](deploy/README.md) for running the managed service.
+
 ## Where your data goes
 
 Savvy keeps your documents and history on your computer, but live transcription is not local. Read this before pointing it at anything confidential.
@@ -50,19 +58,21 @@ Prerequisites:
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm --dir backend install --frozen-lockfile
+pnpm --dir www install --frozen-lockfile
 pnpm verify        # format, typecheck, lint, tests, build, clippy
 pnpm tauri dev
 ```
 
-On macOS, first launch asks for microphone and screen-recording permission, then for a Deepgram or AssemblyAI API key. Windows goes directly to the API key step and checks microphone access when recording starts. Only the microphone is required to get past setup — but without system audio Savvy hears only you, and without a key nothing is transcribed at all.
+On first launch, choose account creation, sign-in or personal providers. Audio setup requests microphone and system-audio access when needed, and can be completed later. Microphone-only mode captures your side of the conversation. Signal meters and a successful transcription test are separate checks.
 
-To use recommendations you also need `codex` or `claude` installed and signed in; Savvy reports provider status in Settings. Windows supports native executables on `PATH` or in `%USERPROFILE%\.local\bin`, plus standard npm installations on `PATH` or in `%APPDATA%\npm`. npm installations also require `node.exe` on `PATH`. Reopen Savvy after installing a CLI or changing `PATH`. WSL installations are not used.
+Personal-provider recommendations require `codex` or `claude` installed and signed in; Savvy reports provider status in Settings. Managed recommendations use the configured backend supplier. On Windows, personal-provider CLIs can be native executables on `PATH` or in `%USERPROFILE%\.local\bin`, or standard npm installations on `PATH` or in `%APPDATA%\npm`. npm installations also require `node.exe` on `PATH`. Reopen Savvy after installing a CLI or changing `PATH`. WSL installations are not used.
 
 On Windows, enable microphone access for desktop apps under **Settings > Privacy & security > Microphone**. In Savvy's **General > System Audio Output**, select the playback device your meeting app uses. The default is the Windows default playback device, which may differ from a meeting app's selected headphones. Loopback captures all audio playing through that device, including other apps and Savvy's optional feedback cues. It does not capture the screen. Change the output selection between meetings. A device failure produces an error; reconnect it and restart the meeting. If system audio cannot start, the microphone keeps working and Savvy displays a warning.
 
 Windows uses `Ctrl+Shift+M` by default. Closing the main window keeps Savvy in the system tray. If **Show Tray Icon** is disabled, closing the window quits Savvy after stopping the meeting; **Start Hidden** only applies when the tray icon is enabled.
 
-Completed setup survives application updates. Microphone access is checked when you start a meeting. If macOS already lists Savvy as allowed but setup disagrees, use **Check again** to verify system-audio access through ScreenCaptureKit. If it still waits after you press Allow, choose **Reopen Savvy**. Savvy does not require Accessibility permission. Development-signed and release-signed builds can have different macOS permission identities.
+Completed setup survives application updates. Microphone access is checked when you start a meeting. If macOS already lists Savvy as allowed but setup disagrees, use **Check again** to verify system-audio access through ScreenCaptureKit. If it still waits after you press Allow, choose **Reopen Savvy**. Savvy does not require Accessibility permission. Development-signed and release-signed builds can have different macOS permission identities. If an enabled permission still fails after reopening, quit Savvy, run `tccutil reset ScreenCapture com.alamaslabs.savvy`, then enable Savvy again in **System Settings → Privacy & Security → Screen & System Audio Recording**. Quit and reopen Savvy after granting access, then run **Check audio**. This resets only Savvy’s screen/audio capture grant.
 
 If your preferred microphone is disconnected before a meeting starts, Savvy uses the system default for that recording and remembers your preference for when it reconnects. A disconnect during a meeting shows a capture error; stop the meeting, reconnect the device, and start again. Savvy does not switch formats inside an existing recording.
 
@@ -85,6 +95,8 @@ Before publishing the first Windows release, verify the following on a Windows 1
 
 ## Repository layout
 
+- `backend/` — one Node service for Better Auth, billing, meetings, transcription relay and AI requests. It owns two SQLite files in one state directory.
+- `www/` — statically exported marketing and pricing website.
 - `src/` — React interface.
 - `src-tauri/` — desktop shell and Tauri commands.
 - `crates/domain/` — stable application contracts.

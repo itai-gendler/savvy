@@ -8,7 +8,9 @@ import { Privacy } from "@/components/sections/Privacy";
 import { Divider } from "@/components/sections/primitives";
 import { Reasons } from "@/components/sections/Reasons";
 import { SourceBand } from "@/components/sections/SourceBand";
+import { Trust } from "@/components/sections/Trust";
 import { YourModel } from "@/components/sections/YourModel";
+import { faqItems } from "@/content/faq";
 import { COMPANY_NAME, LINKS, REPO_URL, SITE_URL } from "@/lib/constants";
 
 const jsonLd = {
@@ -36,6 +38,15 @@ const jsonLd = {
       name: "Savvy",
       inLanguage: "en",
     },
+    {
+      "@type": "FAQPage",
+      "@id": `${SITE_URL}/#faq`,
+      mainEntity: faqItems.map((item) => ({
+        "@type": "Question",
+        name: item.question,
+        acceptedAnswer: { "@type": "Answer", text: item.answer },
+      })),
+    },
   ],
 };
 
@@ -50,6 +61,7 @@ export default function Home() {
       <Rail />
       <main className="overflow-x-clip">
         <Hero />
+        <Trust />
         <Divider />
         <Reasons />
         <Divider />

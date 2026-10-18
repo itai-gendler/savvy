@@ -1,3 +1,4 @@
+import Image from "next/image";
 import type { ReactNode } from "react";
 
 /** Section hairline, clipped to the content column so it never runs under
@@ -7,15 +8,6 @@ export function Divider() {
     <div className="page-column">
       <div className="border-t border-border" />
     </div>
-  );
-}
-
-export function Eyebrow({ children }: { children: ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-2 text-sm font-medium">
-      <span aria-hidden className="h-1.5 w-1.5 border border-foreground/50" />
-      {children}
-    </span>
   );
 }
 
@@ -31,9 +23,7 @@ export function TwoLineHeading({
   as?: "h1" | "h2";
 }) {
   return (
-    <Tag
-      className={`text-3xl font-medium leading-[1.12] tracking-tight lg:text-[40px] ${className}`}
-    >
+    <Tag className={`text-title text-balance ${className}`}>
       <span className="block">{line1}</span>
       {line2 && <span className="block text-muted">{line2}</span>}
     </Tag>
@@ -49,13 +39,36 @@ export function StatList({ items }: { items: Stat[] }) {
         <li
           // biome-ignore lint/suspicious/noArrayIndexKey: static list, never reordered
           key={i}
-          className="flex items-center gap-3 border-t border-border py-4 text-sm font-medium last:border-b"
+          className="flex items-center gap-3 border-t border-border py-4 text-small last:border-b"
         >
           <span className="text-muted">{item.icon}</span>
           {item.label}
         </li>
       ))}
     </ul>
+  );
+}
+
+export function MascotNote({
+  state,
+  note,
+  className = "",
+}: {
+  state: "thinking" | "listening" | "muted";
+  note: string;
+  className?: string;
+}) {
+  return (
+    <div className={`flex items-center gap-3 ${className}`}>
+      <Image
+        src={`/images/mascot/savvy-${state}.png`}
+        alt=""
+        width={112}
+        height={112}
+        className="h-14 w-14 shrink-0 select-none"
+      />
+      <p className="text-small text-muted">{note}</p>
+    </div>
   );
 }
 

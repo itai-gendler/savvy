@@ -1,41 +1,32 @@
 export const faqItems = [
   {
-    question: "What do I need to run Savvy?",
+    question: "Does Savvy join the call as a bot?",
     answer:
-      "An Apple Silicon Mac running macOS 13 or newer, a Deepgram or AssemblyAI API key, and Claude Code or Codex CLI installed and signed in. Allow microphone access to hear you and screen-recording access to capture system audio.",
+      "No. It listens through your Mac, so nobody sees an extra attendee. That also means telling people is up to you.",
+  },
+  {
+    question: "Does it work with Zoom, Google Meet and Microsoft Teams?",
+    answer:
+      "Yes, and with any other call app on your Mac: Savvy hears system audio plus your microphone. In-person meetings work through the microphone.",
   },
   {
     question: "Is Savvy free?",
     answer:
-      "The open-source app is free under the MIT license. You pay your own transcription and model providers for their services.",
+      "Yes. The app is MIT-licensed. Use your own transcription and model accounts, or choose optional managed assistance. See pricing.",
   },
   {
     question: "Where does my data go?",
     answer:
-      "Source files stay in their folders. Savvy stores extracted text, indexes, briefs, recordings, and transcripts on your Mac. Audio streams to your transcription provider. Savvy sends selected excerpts, the whole brief and recent transcript turns to your CLI's model provider. Savvy stores transcription keys in macOS Keychain. At startup, Savvy deletes local recordings and transcripts older than 30 days.",
+      "Files, indexes, briefs and recordings stay on your Mac, and recordings are deleted after 30 days. Audio goes to your transcription provider and selected excerpts to your model provider, or through Savvy to Deepgram and Fireworks GLM-5.3 in managed mode.",
   },
   {
-    question: "Does it work with Zoom, Meet, Teams or phone calls?",
+    question: "How is it different from Granola, Otter or Fireflies?",
     answer:
-      "Savvy captures audio played by apps on your Mac, plus your microphone. It does not join the call as a participant. Calls on another device are not captured unless their audio reaches your Mac.",
+      "Those write up the call afterwards. Savvy helps during it: what to say, what to avoid, and which of your files says so.",
   },
   {
-    question: "Is Savvy hidden from screen share?",
+    question: "What do I need?",
     answer:
-      "No. The panel can appear when you share your screen, like other windows. Follow the rules of your meeting when using AI assistance.",
-  },
-  {
-    question: "Which languages does it handle?",
-    answer:
-      "Available transcription languages depend on the provider and model you select. The response language is a separate setting on your brief, so guidance can use a different language from the conversation.",
-  },
-  {
-    question: "When does Savvy offer guidance?",
-    answer:
-      "Savvy responds to questions, flags constraints from your brief, and offers advice when you press Advice. It also checks recent conversation for relevant changes. Guidance requires a configured recommendation provider.",
-  },
-  {
-    question: "Does it run on Intel Macs?",
-    answer: "Release downloads support Apple Silicon. Intel builds from source are unsupported.",
+      "An Apple Silicon Mac on macOS 13 or newer, plus either a Savvy managed account or a Deepgram or AssemblyAI key with Claude Code or Codex CLI.",
   },
 ] as const;

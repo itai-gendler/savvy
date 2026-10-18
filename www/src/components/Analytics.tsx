@@ -1,14 +1,18 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { CONSENT_KEY as KEY, readConsent, CONSENT_YEAR as YEAR } from "@/lib/consent";
 
 export function Analytics() {
+  const paymentReturn = usePathname()?.replace(/\/$/, "") === "/checkout-complete";
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
+    // Transactional handoffs have no analytics or consent overlay, even after opt-in.
+    if (paymentReturn) return;
     let allowed = false;
     let expires = 0;
     try {
@@ -32,7 +36,7 @@ export function Analytics() {
       script = document.createElement("script");
       script.src = "https://analytics.jamalavedra.com/script.js";
       script.dataset.websiteId = "8a7ddcdb-2cee-4719-a8f2-9c18aa8239e7";
-      script.dataset.domains = "savvycopilot.com";
+      script.dataset.domains = "www.savvycopilot.com";
       script.defer = true;
       document.head.append(script);
     }
@@ -41,7 +45,7 @@ export function Analytics() {
       window.clearTimeout(timer);
       window.removeEventListener("storage", onStorage);
     };
-  }, []);
+  }, [paymentReturn]);
 
   function choose(allowed: boolean) {
     try {
@@ -55,10 +59,12 @@ export function Analytics() {
     }
   }
 
+  if (paymentReturn) return null;
+
   return (
     <aside
       aria-label="Privacy preferences"
-      className="fixed bottom-4 left-4 right-4 z-50 sm:right-auto sm:max-w-md"
+      className="fixed bottom-4 left-4 right-4 z-50 sm:left-auto sm:max-w-md"
     >
       {open ? (
         <div className="rounded-xl border border-border bg-surface p-5 shadow-lg">
@@ -103,7 +109,7 @@ export function Analytics() {
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="focus-ring rounded-full border border-border bg-surface px-4 py-2 text-xs shadow-sm"
+          className="focus-ring ml-auto block rounded-full border border-border bg-surface px-4 py-2 text-xs shadow-sm"
         >
           Privacy preferences
         </button>

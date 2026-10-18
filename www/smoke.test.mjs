@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { faqItems } from "./src/content/faq.ts";
 import { getAllPosts } from "./src/lib/blog.ts";
 import { CONSENT_YEAR, readConsent } from "./src/lib/consent.ts";
 import { SITE_URL } from "./src/lib/constants.ts";
+import worker from "./worker.js";
 
 test("static export has metadata, FAQ answers and referenced assets", async () => {
   const html = await readFile("out/index.html", "utf8");
-  assert.match(html, /rel="canonical" href="https:\/\/savvycopilot\.com\/"/);
-  assert.equal([...html.matchAll(/<details[ >]/g)].length, 8);
+  assert.match(html, /rel="canonical" href="https:\/\/www\.savvycopilot\.com\/"/);
+  assert.equal([...html.matchAll(/<details[ >]/g)].length, faqItems.length);
+  assert.match(html, /href="https:\/\/github\.com\/jamalavedra\/savvy\/releases\/latest"/);
+  for (const app of ["google-meet", "microsoft-teams", "zoom"]) {
+    assert.match(html, new RegExp(`/images/logos/${app}\\.svg`));
+  }
   assert.match(html, /<summary[^>]*>Where does my data go\?/);
   for (const [, asset] of html.matchAll(/(?:src|poster)="(\/[^"?]+)"/g)) {
     await access(`out${asset}`);
   }
   for (const file of ["robots.txt", "sitemap.xml"]) {
-    assert.match(await readFile(`out/${file}`, "utf8"), /https:\/\/savvycopilot\.com/);
+    assert.match(await readFile(`out/${file}`, "utf8"), /https:\/\/www\.savvycopilot\.com/);
   }
   await access("out/404.html");
 });
@@ -46,15 +52,25 @@ test("privacy notice is linked and analytics is absent from initial HTML", async
   const privacy = await readFile("out/privacy/index.html", "utf8");
   assert.match(home, /href="\/privacy\/"/);
   assert.doesNotMatch(home, /<script[^>]+src="https:\/\/analytics\.jamalavedra\.com/);
-  assert.match(privacy, /rel="canonical" href="https:\/\/savvycopilot\.com\/privacy\/"/);
+  assert.match(privacy, /rel="canonical" href="https:\/\/www\.savvycopilot\.com\/privacy\/"/);
   assert.match(privacy, /Alamas Labs, Inc\./);
   assert.match(privacy, /mailto:hello@savvycopilot\.com/);
   assert.doesNotMatch(privacy, /Draft for review|\[Confirm|\[public privacy/);
+  assert.doesNotMatch(privacy, /does not describe a future managed subscription/);
+  for (const processing of [
+    "Managed accounts and payments",
+    "Managed meeting processing",
+    "Deepgram",
+    "Fireworks",
+    "Stripe",
+    "no automatic expiry",
+  ])
+    assert.ok(privacy.includes(processing), `Missing managed processing disclosure: ${processing}`);
 });
 
 test("static export includes the blog and generated llms.txt", async () => {
   const posts = getAllPosts();
-  assert.equal(posts.length, 5);
+  assert.equal(posts.length, 11);
   const llms = await readFile("out/llms.txt", "utf8");
   const sitemap = await readFile("out/sitemap.xml", "utf8");
   await access("out/blog/index.html");
@@ -77,4 +93,31 @@ test("static export includes the blog and generated llms.txt", async () => {
   ]) {
     assert.ok(llms.includes(caveat), `Missing caveat: ${caveat}`);
   }
+});
+
+test("managed pricing uses the shared catalog and return page only requests refresh", async () => {
+  const catalog = JSON.parse(await readFile("../config/managed-catalog.json", "utf8"));
+  const pricing = await readFile("out/pricing/index.html", "utf8");
+  const returned = await readFile("out/checkout-complete/index.html", "utf8");
+  const text = pricing.replace(/<[^>]*>/g, "");
+  for (const offer of Object.values(catalog)) {
+    assert.ok(text.includes(String(offer.amountCents / 100)));
+    assert.ok(text.includes(`${offer.hours} meeting hours and ${offer.briefs} briefs`));
+  }
+  assert.match(pricing, /Personal providers/);
+  assert.match(pricing, /nothing to Savvy/);
+  assert.match(pricing, /No scheduled expiry/);
+  assert.match(pricing, /paid period end/);
+  assert.match(returned, /This page does not confirm payment/);
+  assert.match(returned, /Refresh account/);
+  assert.doesNotMatch(returned, /Payment successful|purchase complete|checkout\.stripe\.com/);
+});
+
+test("worker redirects the apex domain to www with a 308", async () => {
+  const env = { ASSETS: { fetch: () => new Response("asset") } };
+  const apex = await worker.fetch(new Request("https://savvycopilot.com/blog/?x=1"), env);
+  assert.equal(apex.status, 308);
+  assert.equal(apex.headers.get("location"), `${SITE_URL}/blog/?x=1`);
+  const www = await worker.fetch(new Request(`${SITE_URL}/`), env);
+  assert.equal(await www.text(), "asset");
 });
