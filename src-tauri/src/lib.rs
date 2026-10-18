@@ -3,7 +3,7 @@ mod brief_job;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod provider_output;
 use brief_job::BriefJob;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod audio_check;
 use chrono::{DateTime, Utc};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -610,29 +610,36 @@ async fn managed_billing(
         .map_err(|e| e.to_string())
 }
 
-/// Opens the relevant macOS privacy pane without requesting capture.
+/// Opens the relevant system audio or microphone settings without requesting capture.
 #[tauri::command]
 fn open_audio_settings(app: AppHandle, system: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let pane = if system {
+        "ms-settings:sound"
+    } else {
+        "ms-settings:privacy-microphone"
+    }
+    .to_owned();
+    #[cfg(not(target_os = "windows"))]
     let pane = if system {
         "Privacy_ScreenCapture"
     } else {
         "Privacy_Microphone"
     };
+    #[cfg(not(target_os = "windows"))]
+    let pane = format!("x-apple.systempreferences:com.apple.preference.security?{pane}");
     app.opener()
-        .open_url(
-            format!("x-apple.systempreferences:com.apple.preference.security?{pane}"),
-            None::<&str>,
-        )
+        .open_url(pane, None::<&str>)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 fn audio_check_stop(id: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         audio_check::stop(&id)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = id;
         Ok(())
@@ -645,8 +652,9 @@ async fn audio_check_start(
     transcribe: bool,
     id: String,
 ) -> Result<String, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
+        #[cfg(target_os = "macos")]
         if !tauri_plugin_macos_permissions::check_microphone_permission().await {
             return Err("Allow Savvy microphone access in System Settings > Privacy & Security > Microphone, then quit and reopen Savvy before checking audio again.".into());
         }
@@ -677,10 +685,10 @@ async fn audio_check_start(
             Uuid::parse_str(&id).map_err(|_| "invalid audio check ID")?,
         )
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (app, state, transcribe, id);
-        Err("Audio checks require macOS.".into())
+        Err("Audio checks require macOS or Windows.".into())
     }
 }
 
@@ -803,7 +811,7 @@ fn update_settings(
         .lock()
         .map_err(|_| "settings lock poisoned")?
         .clone();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if (settings.service_mode != previous.service_mode
         || settings.microphone_only != previous.microphone_only)
         && audio_check::active()
@@ -2742,7 +2750,7 @@ fn start_meeting_inner(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<MeetingSession, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if audio_check::active() {
         return Err("Stop the audio check before starting a meeting.".into());
     }
@@ -4522,7 +4530,7 @@ fn set_meeting_listening(
         drop(system_audio);
     }
     drop(guard);
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if !listening {
         drain_transcript_assembly(state)?;
     }
@@ -4762,7 +4770,7 @@ fn stop_live_meeting(
     if let Some(error) = system_audio_error {
         let _ = app.emit("meeting://capture-error", error.to_string());
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     drain_transcript_assembly(state)?;
     if session
         .audio_path
