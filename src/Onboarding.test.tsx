@@ -923,7 +923,9 @@ describe("Onboarding off macOS", () => {
   it("takes Windows users directly to credentials without claiming permissions were checked", async () => {
     getAppStatus.mockResolvedValue({ version: "0.1.0", platform: "windows" });
     render(<Onboarding onComplete={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Use your own providers" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Use your own providers" }),
+    );
     expect(
       await screen.findByPlaceholderText("Paste your API key"),
     ).toBeVisible();
