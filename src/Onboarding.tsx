@@ -133,21 +133,18 @@ export default function Onboarding({ onComplete }: { onComplete: () => void }) {
   const [keyCheckPending, setKeyCheckPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void getAppStatus()
-      .then((status) => setPlatform(status.platform))
-      .catch(() => undefined);
-  }, []);
-
-  const applyPermissions = useCallback((reading: PermissionReading | null) => {
-    if (!reading) return false;
-    setIsMacos(reading.macos);
-    setPlatform(reading.platform);
-    if (reading.platform === "windows") setStep("transcription");
-    setMicrophone(reading.mic ? "granted" : "needed");
-    setScreen(reading.capture ? "granted" : "needed");
-    return true;
-  }, []);
+  const applyPermissions = useCallback(
+    (reading: PermissionReading | null) => {
+      if (!reading) return false;
+      setIsMacos(reading.macos);
+      setPlatform(reading.platform);
+      if (reading.platform === "windows" && !managed) setStep("transcription");
+      setMicrophone(reading.mic ? "granted" : "needed");
+      setScreen(reading.capture ? "granted" : "needed");
+      return true;
+    },
+    [managed],
+  );
 
   /** The rows would otherwise sit on "Checking…" forever with nothing explaining it. */
   const reportCheckFailure = useCallback(() => {
@@ -301,7 +298,9 @@ export default function Onboarding({ onComplete }: { onComplete: () => void }) {
     setError(null);
     try {
       const settings = await getAppSettings();
+      const status = await getAppStatus().catch(() => null);
       setProvider(settings.transcriptionProvider);
+      if (status) setPlatform(status.platform);
       setManaged(false);
       setStep("transcription");
     } catch (reason) {
@@ -536,7 +535,7 @@ export default function Onboarding({ onComplete }: { onComplete: () => void }) {
       <OnboardingShell
         subtitle="Welcome to Savvy"
         className="onboarding-welcome"
-        footer="Your meeting history stays on this Mac."
+        footer="Your meeting history stays on this computer."
       >
         <h2>Your next meeting, prepared.</h2>
         <p>Savvy handles transcription and AI setup.</p>
@@ -747,7 +746,7 @@ function PersonalAISetup({
     <OnboardingShell subtitle="Connect your AI">
       <p>
         Choose the account you use for meeting guidance. Savvy checks
-        installation and sign-in on this Mac.
+        installation and sign-in on this computer.
       </p>
       <div
         className="onboarding-providers"
