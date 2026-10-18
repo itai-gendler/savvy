@@ -1,6 +1,6 @@
 mod brief_document;
 mod brief_job;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod provider_output;
 use brief_job::BriefJob;
 #[cfg(target_os = "macos")]
@@ -2194,7 +2194,7 @@ fn collect_brief_evidence(
     collect_brief_evidence_for_job(root, client_id, max_chars, excluded_paths, None)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn collect_brief_evidence_for_job(
     root: &Path,
     client_id: Uuid,
@@ -3882,7 +3882,7 @@ fn start_transcription_worker(
 /// Assembles provider events into turns, reconciles the two sources, and
 /// dispatches opportunity scans. Shared by the BYOK and managed paths: the
 /// transport differs, the downstream meeting logic must not.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn spawn_transcript_assembly(
     app: AppHandle,
     session_id: Uuid,
@@ -4172,7 +4172,7 @@ fn spawn_managed_stream(
     });
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn finish_managed_failure(app: AppHandle, id: Uuid, message: &str) {
     if message.contains("session_ended") {
         tauri::async_runtime::spawn_blocking(move || {
@@ -4183,7 +4183,7 @@ fn finish_managed_failure(app: AppHandle, id: Uuid, message: &str) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn pause_managed_assistance(app: AppHandle, id: Uuid) {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
@@ -4203,7 +4203,7 @@ fn pause_managed_assistance(app: AppHandle, id: Uuid) {
 
 /// Quota, authorization, and session conflicts are decisions, not outages:
 /// retrying cannot fix them and would keep asking the service for paid work.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn is_terminal_managed_failure(message: &str) -> bool {
     [
         "quota_exhausted",
@@ -4846,13 +4846,16 @@ fn shutdown_providers(state: &AppState) {
 fn get_audio_level(state: State<'_, AppState>) -> Result<f32, String> {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        match state.system_audio.try_lock() {
-            Ok(system) => {
-                system.level().map_err(|error| error.to_string())?;
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {}
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                return Err("system audio lock poisoned".into())
+        #[cfg(target_os = "macos")]
+        {
+            match state.system_audio.try_lock() {
+                Ok(system) => {
+                    system.level().map_err(|error| error.to_string())?;
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {}
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err("system audio lock poisoned".into())
+                }
             }
         }
         match state.microphone.try_lock() {
@@ -5319,7 +5322,7 @@ fn spawn_provider_enhancement(app: AppHandle, pending: PendingGeneration, provid
     });
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 async fn run_provider_enhancement(app: AppHandle, pending: PendingGeneration, provider: String) {
     let settings = app
         .state::<AppState>()
