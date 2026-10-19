@@ -2,8 +2,8 @@
 //!
 //! Errors crossing the Tauri boundary are strings; managed failures use a
 //! stable `code: message` shape so the UI can branch on the code while BYOK
-//! errors stay free-form. The refresh token lives in the macOS Keychain under
-//! its own service name; access tokens stay in process memory only.
+//! errors stay free-form. The refresh token lives in the platform credential
+//! store under its own service name; access tokens stay in process memory only.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -16,9 +16,9 @@ use std::time::{Duration, Instant};
 
 pub const SIGN_IN_REQUIRED: &str = "sign_in_required";
 
-/// Keychain service for the managed refresh token, distinct from the
+/// Credential-store service for the managed refresh token, distinct from the
 /// transcription-key service so BYOK keys and account credentials never mix.
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
 pub const MANAGED_KEYCHAIN_SERVICE: &str = "com.alamaslabs.savvy.managed";
 
 pub fn typed_error(code: &str, message: &str) -> String {
@@ -120,7 +120,7 @@ impl ServiceOperation {
     fn begin() -> Result<Self, String> {
         Self::register(false)
     }
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     pub(crate) fn begin_audio_check() -> Result<Self, String> {
         Self::register(true)
     }
@@ -207,11 +207,25 @@ fn write_revocations(records: &[PendingRevocation]) -> Result<(), String> {
     *context.revocations.lock().unwrap() = records.to_vec();
     Ok(())
 }
-#[cfg(all(not(target_os = "macos"), not(test)))]
+#[cfg(all(target_os = "windows", not(test)))]
+fn read_revocations() -> Result<Vec<PendingRevocation>, String> {
+    match crate::credentials::get_for(MANAGED_KEYCHAIN_SERVICE, "pending-revocations-v1")? {
+        Some(bytes) => {
+            serde_json::from_slice(&bytes).map_err(|_| "invalid pending revocation record".into())
+        }
+        None => Ok(vec![]),
+    }
+}
+#[cfg(all(target_os = "windows", not(test)))]
+fn write_revocations(records: &[PendingRevocation]) -> Result<(), String> {
+    let bytes = serde_json::to_vec(records).map_err(|_| "invalid pending revocation record")?;
+    crate::credentials::set_for(MANAGED_KEYCHAIN_SERVICE, "pending-revocations-v1", &bytes)
+}
+#[cfg(all(not(any(target_os = "macos", target_os = "windows")), not(test)))]
 fn read_revocations() -> Result<Vec<PendingRevocation>, String> {
     Ok(vec![])
 }
-#[cfg(all(not(target_os = "macos"), not(test)))]
+#[cfg(all(not(any(target_os = "macos", target_os = "windows")), not(test)))]
 fn write_revocations(_records: &[PendingRevocation]) -> Result<(), String> {
     Err("secure credential storage is available on macOS".into())
 }
@@ -316,7 +330,7 @@ fn http() -> Result<reqwest::blocking::Client, String> {
         .map_err(|error| error.to_string())
 }
 
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
 fn credential_account() -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let c = config()?;
@@ -414,7 +428,16 @@ fn test_context() -> Option<TestContext> {
 fn read_refresh_token() -> Result<Option<String>, String> {
     Ok(test_context().and_then(|context| context.credential.lock().unwrap().clone()))
 }
-#[cfg(all(not(target_os = "macos"), not(test)))]
+#[cfg(all(target_os = "windows", not(test)))]
+fn read_refresh_token() -> Result<Option<String>, String> {
+    crate::credentials::get_for(MANAGED_KEYCHAIN_SERVICE, &credential_account()?)?
+        .map(|bytes| {
+            String::from_utf8(bytes)
+                .map_err(|_| "stored Savvy credential is not valid UTF-8".into())
+        })
+        .transpose()
+}
+#[cfg(all(not(any(target_os = "macos", target_os = "windows")), not(test)))]
 fn read_refresh_token() -> Result<Option<String>, String> {
     Ok(None)
 }
@@ -425,7 +448,15 @@ fn store_refresh_token(token: &str) -> Result<(), String> {
     *context.credential.lock().unwrap() = Some(token.to_owned());
     Ok(())
 }
-#[cfg(all(not(target_os = "macos"), not(test)))]
+#[cfg(all(target_os = "windows", not(test)))]
+fn store_refresh_token(token: &str) -> Result<(), String> {
+    crate::credentials::set_for(
+        MANAGED_KEYCHAIN_SERVICE,
+        &credential_account()?,
+        token.as_bytes(),
+    )
+}
+#[cfg(all(not(any(target_os = "macos", target_os = "windows")), not(test)))]
 fn store_refresh_token(_token: &str) -> Result<(), String> {
     Err("secure credential storage is available on macOS".into())
 }
@@ -437,7 +468,11 @@ fn delete_refresh_token() -> Result<(), String> {
     }
     Ok(())
 }
-#[cfg(all(not(target_os = "macos"), not(test)))]
+#[cfg(all(target_os = "windows", not(test)))]
+fn delete_refresh_token() -> Result<(), String> {
+    crate::credentials::delete_for(MANAGED_KEYCHAIN_SERVICE, &credential_account()?)
+}
+#[cfg(all(not(any(target_os = "macos", target_os = "windows")), not(test)))]
 fn delete_refresh_token() -> Result<(), String> {
     Ok(())
 }
@@ -1737,17 +1772,17 @@ mod issuer_tests {
                 app_operation: Mutex::new(false),
                 settings_path: directory.join("settings.json"),
                 provider_health: Mutex::new(Vec::new()),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 microphone: Mutex::new(crate::MicrophoneCapture::new()),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 system_audio: Mutex::new(crate::SystemAudioCapture::new()),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 transcription_stop: Mutex::new(None),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 transcription_assembly: Mutex::new(None),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 codex_server: Mutex::new(None),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 claude_child: Mutex::new(None),
             })
             .invoke_handler(tauri::generate_handler![
@@ -1770,7 +1805,13 @@ mod issuer_tests {
                     cmd: command.into(),
                     callback: tauri::ipc::CallbackFn(0),
                     error: tauri::ipc::CallbackFn(1),
-                    url: "tauri://localhost".parse().unwrap(),
+                    url: if cfg!(target_os = "windows") {
+                        "http://tauri.localhost"
+                    } else {
+                        "tauri://localhost"
+                    }
+                    .parse()
+                    .unwrap(),
                     body: tauri::ipc::InvokeBody::Json(body),
                     headers: Default::default(),
                     invoke_key: tauri::test::INVOKE_KEY.into(),

@@ -15,11 +15,12 @@ permissions:
 
 jobs:
   verify:
-    # macOS runner, not ubuntu. The workspace does compile elsewhere — the
-    # cross-platform-check job below proves it — but everything worth testing
-    # (capture, Keychain, overlay, tray) is behind cfg(target_os = "macos") and
-    # would be compiled out.
-    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        # pnpm 10's node-gyp 11 cannot build better-sqlite3 with the VS 2026-only image.
+        platform: [macos-26, windows-2022]
+    runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,32 +43,52 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # The backend and website keep their own lockfiles; verify runs their checks too.
-      - name: Install backend and website dependencies
-        run: |
-          pnpm --dir backend install --frozen-lockfile
-          pnpm --dir www install --frozen-lockfile
+      - name: Install backend dependencies
+        run: pnpm --dir backend install --frozen-lockfile
 
-      # Same gate developers run locally: prettier, tsc, eslint, vitest, cargo test,
-      # backend typecheck/tests/build, vite build, and clippy with warnings denied.
-      - name: Verify
-        run: pnpm verify
+      - name: Install website dependencies
+        run: pnpm --dir www install --frozen-lockfile
 
-      - name: Audit JavaScript dependencies
-        run: |
-          pnpm audit --audit-level=moderate
-          pnpm --dir backend audit --audit-level=moderate
-          pnpm --dir www audit --audit-level=moderate
+      - name: Format and frontend checks
+        run: pnpm format:check && pnpm typecheck && pnpm lint && pnpm test
+
+      - name: Rust tests
+        run: pnpm test:rust
+
+      - name: Backend checks
+        run: pnpm --dir backend typecheck && pnpm --dir backend test
+
+      - name: Build and lint
+        run: pnpm build && cargo clippy --workspace --all-targets --locked -- -D warnings && pnpm --dir backend build
+
+      - name: Audit frontend dependencies
+        run: pnpm audit --audit-level=moderate
+
+      - name: Audit backend dependencies
+        run: pnpm --dir backend audit --audit-level=moderate
+
+      - name: Audit website dependencies
+        run: pnpm --dir www audit --audit-level=moderate
 
       - name: Install browser
         run: pnpm --dir backend exec playwright install chromium
 
-      - name: Managed flow fixture acceptance
-        run: |
-          pnpm --dir backend test:browser
-          pnpm --dir backend test:desktop
-          pnpm --dir backend test:native-auth
-          pnpm --dir backend test:package
-          pnpm --dir backend test:web-return
+      - name: Browser sign-in fixture
+        run: pnpm --dir backend test:browser
+
+      - name: Desktop fixture
+        run: pnpm --dir backend test:desktop
+
+      - name: Native auth fixture
+        run: pnpm --dir backend test:native-auth
+
+      - name: Package fixture
+        # Exercises Unix deploy scripts; Windows packaging is built below.
+        if: runner.os != 'Windows'
+        run: pnpm --dir backend test:package
+
+      - name: Web return fixture
+        run: pnpm --dir backend test:web-return
 
       - name: Mixed managed load
         if: github.event_name == 'workflow_dispatch'
@@ -83,9 +104,20 @@ jobs:
       - name: Check dependencies
         run: cargo deny check
 
-  # Savvy only ships for macOS, but the non-macOS code paths are all `cfg`-gated
-  # stubs that nothing compiles locally — they rot silently. These jobs only run
-  # `cargo check`; they do not assert the app is usable on these platforms.
+      - name: Build Windows preview installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Upload Windows preview installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: savvy-windows-x64-preview
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  # Linux remains compile-only; its native meeting integrations are not enabled.
   cross-platform-check:
     strategy:
       fail-fast: false
@@ -93,8 +125,6 @@ jobs:
         include:
           - platform: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout repository

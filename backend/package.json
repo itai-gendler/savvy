@@ -14,7 +14,7 @@
     "test:desktop": "tsx --test src/desktop.check.ts",
     "build:server": "tsc -p tsconfig.server.json && node scripts/copy-assets.mjs",
     "build:ui": "vite build",
-    "test:native-auth": "pnpm build && cargo test -p savvy --lib local_stripe_sandbox_desktop_transport --locked --no-run && SAVVY_NATIVE_CHECK=1 tsx --test src/browser.check.ts",
+    "test:native-auth": "pnpm build && cargo test -p savvy --lib local_stripe_sandbox_desktop_transport --locked --no-run && node --env-file=scripts/native-auth.flags --import tsx --test src/browser.check.ts",
     "test:load": "pnpm build:server && node --test e2e/load.test.mjs",
     "test:package": "pnpm build && node --test e2e/package.test.mjs",
     "test:web-return": "pnpm --dir ../www build && tsx --test src/return.check.ts"
@@ -45,11 +45,5 @@
     "tsx": "4.23.13",
     "typescript": "7.0.2",
     "vite": "^7.3.6"
-  },
-  "pnpm": {
-    "overrides": {
-      "source-map-js": "1.2.2",
-      "nodemailer": "10.0.9"
-    }
   }
 }

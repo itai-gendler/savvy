@@ -144,6 +144,7 @@ export function resetBrowserDemoState({
   demoManagedOffline = false;
   browserDemo.activeSession = null;
   browserSettings.serviceMode = "byok";
+  browserSettings.startListeningShortcut = "Command+Shift+M";
   removedDemoClientIds.clear();
   removedDemoBriefScopes.clear();
   demoExcludedPaths.clear();
@@ -196,6 +197,7 @@ const browserSettings: AppSettings = {
   microphoneOnly: false,
   audioFeedback: false,
   selectedOutputDevice: null,
+  selectedSystemOutputDevice: null,
   audioFeedbackVolume: 0.5,
   recommendationProvider: "codex",
   codexModel: "gpt-5.6-sol",

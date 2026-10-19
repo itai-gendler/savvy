@@ -920,6 +920,51 @@ describe("Onboarding off macOS", () => {
 
   afterEach(() => vi.clearAllMocks());
 
+  it("takes Windows users directly to credentials without claiming permissions were checked", async () => {
+    getAppStatus.mockResolvedValue({ version: "0.1.0", platform: "windows" });
+    await renderOnboarding(false);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Use your own providers" }),
+    );
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText("Paste your API key")).toBeVisible(),
+    );
+    expect(screen.getByText(/Windows Credential Manager/)).toBeVisible();
+    expect(screen.queryByText("Allowed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Screen & system audio")).not.toBeInTheDocument();
+    expect(checkMicrophonePermission).not.toHaveBeenCalled();
+    expect(checkScreenRecordingPermission).not.toHaveBeenCalled();
+    expect(probeSystemAudioPermission).not.toHaveBeenCalled();
+    expect(requestMicrophonePermission).not.toHaveBeenCalled();
+  });
+
+  it("keeps a signed-in Windows account on managed audio setup", async () => {
+    getAppStatus.mockResolvedValue({ version: "0.1.0", platform: "windows" });
+    const begin = vi.spyOn(appApi, "managedSignInBegin").mockResolvedValue({
+      flowId: "windows-managed",
+      authorizationUrl: "https://auth.example.test/authorize",
+    });
+    const finish = vi
+      .spyOn(appApi, "managedSignInFinish")
+      .mockResolvedValue(
+        {} as Awaited<ReturnType<typeof appApi.managedSignInFinish>>,
+      );
+    try {
+      await renderOnboarding(false);
+      fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+      expect(
+        await screen.findByText("To get started, let Savvy hear the meeting."),
+      ).toBeVisible();
+      expect(
+        screen.queryByLabelText("Deepgram API key"),
+      ).not.toBeInTheDocument();
+      expect((await getAppSettings()).serviceMode).toBe("managed");
+    } finally {
+      begin.mockRestore();
+      finish.mockRestore();
+    }
+  });
+
   it("treats permissions as satisfied and never offers a dead control", async () => {
     await renderOnboarding();
 

@@ -1,17 +1,17 @@
 mod brief_document;
 mod brief_job;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod provider_output;
 use brief_job::BriefJob;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod audio_check;
 use chrono::{DateTime, Utc};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use savvy_audio::{
     input_devices, output_devices, play_feedback, AudioCapture, AudioDevice, AudioFrame,
     AudioSource, MicrophoneCapture, SystemAudioCapture,
 };
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use savvy_domain::RecommendationLifecycle;
 use savvy_domain::{
     AppStatus, BriefSnapshot, BriefStatus, ClientWorkspace, ContextPack, ContextSourceKind,
@@ -20,33 +20,29 @@ use savvy_domain::{
     Recommendation, SourceReadiness, SourceReference, SpeakerChannel, TranscriptTurn,
     TranscriptUpdate, Trigger,
 };
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 use savvy_domain::{Concession, GroundedFact, OutlineSection};
 use savvy_dossier::{chunk_text, scan_folder};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use savvy_meeting::apply_ledger_updates;
 use savvy_meeting::{GenerationToken, OutlineTracker, RecommendationCoordinator, RollingContext};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use savvy_providers::{cites_opportunity_focal_turn, RecommendationRequest};
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 use savvy_providers::{BriefWireEvidence, BriefWireRequest, GeneratedBrief};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use savvy_providers::{ProviderAdvice, BRIEF_OUTPUT_SCHEMA, PROVIDER_OUTPUT_SCHEMA};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use savvy_recommendations::validate_recommendation;
 use savvy_recommendations::{
     accelerates_scan, is_meaningful_remote_turn, recommend_from_hard_constraint, TriggerDetector,
 };
 use savvy_storage::Storage;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use savvy_transcription::{
     speaker_channel, stream_transcription, LiveTranscript, ReconciledTranscript, StreamingProvider,
 };
-#[cfg(target_os = "macos")]
-use security_framework::passwords::{
-    delete_generic_password, get_generic_password, set_generic_password,
-};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
@@ -58,28 +54,32 @@ use std::{
     sync::Mutex,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 use uuid::Uuid;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod credentials;
 mod managed;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod overlay;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod provider_process;
 #[cfg(target_os = "macos")]
 mod relaunch;
 mod settings;
 mod transcription_key;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod tray;
 
 use settings::{AppSettings, ServiceMode};
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AudioDevice {
@@ -110,8 +110,6 @@ struct MeetingHistoryItem {
     recommendations: Vec<Recommendation>,
 }
 
-#[cfg(target_os = "macos")]
-const TRANSCRIPTION_KEYCHAIN_SERVICE: &str = "com.alamaslabs.savvy.transcription";
 const MEETING_RETENTION_DAYS: i64 = 30;
 
 struct AppState {
@@ -122,21 +120,21 @@ struct AppState {
     app_operation: Mutex<bool>,
     settings_path: PathBuf,
     provider_health: Mutex<Vec<ProviderHealth>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     microphone: Mutex<MicrophoneCapture>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     system_audio: Mutex<SystemAudioCapture>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     transcription_stop: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     transcription_assembly: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     codex_server: Mutex<Option<std::sync::Arc<CodexAppServer>>>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     claude_child: ClaudeChildSlot,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug)]
 enum CodexFailure {
     Superseded,
@@ -144,21 +142,21 @@ enum CodexFailure {
     Fatal(String),
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl From<String> for CodexFailure {
     fn from(message: String) -> Self {
         Self::Fatal(message)
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl From<&str> for CodexFailure {
     fn from(message: &str) -> Self {
         Self::Fatal(message.to_owned())
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl std::fmt::Display for CodexFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -169,7 +167,7 @@ impl std::fmt::Display for CodexFailure {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn lock_current_run<'a>(
     lock: &'a Mutex<()>,
     is_current: &impl Fn() -> bool,
@@ -193,7 +191,7 @@ fn lock_current_run<'a>(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 struct CodexAppServer {
     child: Mutex<std::process::Child>,
     stdin: Mutex<std::process::ChildStdin>,
@@ -218,11 +216,11 @@ struct LiveMeeting {
     scan_turn_ids: Vec<Uuid>,
     scan_accelerated: bool,
     provider_warning_sent: bool,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     started_monotonic: std::time::Instant,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone)]
 struct PendingGeneration {
     token: GenerationToken,
@@ -232,7 +230,7 @@ struct PendingGeneration {
 }
 
 // ponytail: one desktop meeting at a time; keep one worker across stop/restart too.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[derive(Default)]
 struct RecommendationWork {
     running: bool,
@@ -242,7 +240,7 @@ struct RecommendationWork {
     managed_not_before: Option<tokio::time::Instant>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl RecommendationWork {
     fn next_start(&self, earliest: tokio::time::Instant) -> tokio::time::Instant {
         if self
@@ -273,7 +271,7 @@ impl RecommendationWork {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 static RECOMMENDATION_WORK: std::sync::LazyLock<Mutex<RecommendationWork>> =
     std::sync::LazyLock::new(|| Mutex::new(RecommendationWork::default()));
 
@@ -310,20 +308,20 @@ fn emit_meeting_event(app: &AppHandle, event: savvy_domain::MeetingEvent) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 struct GeneratedRecommendation {
     recommendation: Option<Recommendation>,
     memory_updates: Vec<savvy_domain::LedgerItem>,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 #[derive(Debug, Clone)]
 struct BriefEvidence {
     source: SourceReference,
     text: String,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 struct ProviderRequest<'a> {
     schema: &'a str,
     result_name: &'a str,
@@ -332,18 +330,18 @@ struct ProviderRequest<'a> {
     cancellation: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const MAX_GUIDANCE_CHARS: usize = 120_000;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const MAX_CLIENT_CHARS: usize = 320_000;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const MAX_DOCUMENT_CHARS: usize = 16_000;
 const MAX_BRIEF_DOCUMENT_BYTES: u64 = 2 * 1024 * 1024;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const SCAN_MIN_GAP_MS: u64 = 30_000;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const SCAN_MAX_WAIT_MS: u64 = 60_000;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const SCAN_TURNS: usize = 2;
 const MAX_SCAN_TURNS: usize = 8;
 
@@ -373,7 +371,7 @@ async fn get_recommendation_provider_status(
     Ok(health)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn recommendation_provider_status() -> Vec<ProviderHealth> {
     [
         ("codex", "Codex CLI", &["login", "status"][..]),
@@ -381,7 +379,7 @@ fn recommendation_provider_status() -> Vec<ProviderHealth> {
     ]
     .into_iter()
     .map(|(provider, display_name, auth_args)| {
-        let Ok(binary) = find_cli_binary(provider) else {
+        let Ok(binary) = provider_process::find(provider) else {
             return ProviderHealth {
                 provider: provider.into(),
                 available: false,
@@ -389,10 +387,9 @@ fn recommendation_provider_status() -> Vec<ProviderHealth> {
                 message: format!("{display_name} is not installed or not on PATH"),
             };
         };
-        let version = std::process::Command::new(&binary)
-            .arg("--version")
-            .output()
+        let version = provider_process::command(&binary)
             .ok()
+            .and_then(|mut command| command.arg("--version").output().ok())
             .filter(|output| output.status.success())
             .and_then(|output| {
                 String::from_utf8_lossy(&output.stdout)
@@ -400,10 +397,9 @@ fn recommendation_provider_status() -> Vec<ProviderHealth> {
                     .find(|part| part.chars().next().is_some_and(char::is_numeric))
                     .map(str::to_owned)
             });
-        let auth = std::process::Command::new(binary)
-            .args(auth_args)
-            .output()
-            .ok();
+        let auth = provider_process::command(binary)
+            .ok()
+            .and_then(|mut command| command.args(auth_args).output().ok());
         let authenticated = auth.as_ref().is_some_and(|output| {
             auth_output_authenticated(
                 provider,
@@ -432,7 +428,7 @@ fn recommendation_provider_status() -> Vec<ProviderHealth> {
     .collect()
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn choose_healthy_provider(
     preferred: &str,
     providers: &[ProviderHealth],
@@ -451,7 +447,7 @@ fn choose_healthy_provider(
         .ok_or_else(|| "no installed recommendation provider is authenticated".into())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn auth_output_authenticated(provider: &str, success: bool, stdout: &[u8], stderr: &[u8]) -> bool {
     if provider == "claude" {
         serde_json::from_slice::<serde_json::Value>(stdout)
@@ -469,7 +465,7 @@ fn auth_output_authenticated(provider: &str, success: bool, stdout: &[u8], stder
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn recommendation_provider_status() -> Vec<ProviderHealth> {
     ["codex", "claude"]
         .into_iter()
@@ -477,7 +473,7 @@ fn recommendation_provider_status() -> Vec<ProviderHealth> {
             provider: provider.into(),
             available: false,
             credential_present: false,
-            message: "CLI provider detection is available on macOS".into(),
+            message: "CLI provider detection is available on macOS and Windows".into(),
         })
         .collect()
 }
@@ -518,19 +514,15 @@ async fn set_transcription_api_key(
     provider: String,
     api_key: String,
 ) -> Result<TranscriptionKeyStatus, transcription_key::KeyError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         let api_key = api_key.trim();
         transcription_key::validate(&provider, api_key).await?;
-        set_generic_password(
-            TRANSCRIPTION_KEYCHAIN_SERVICE,
-            &provider,
-            api_key.as_bytes(),
-        )
-        .map_err(|_| transcription_key::KeyError::storage())?;
+        credentials::set(&provider, api_key.as_bytes())
+            .map_err(|_| transcription_key::KeyError::storage())?;
         transcription_key_status().map_err(|_| transcription_key::KeyError::storage())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (provider, api_key);
         Err(transcription_key::KeyError::storage())
@@ -540,54 +532,38 @@ async fn set_transcription_api_key(
 #[tauri::command]
 fn delete_transcription_api_key(provider: String) -> Result<TranscriptionKeyStatus, String> {
     validate_transcription_provider(&provider)?;
-    #[cfg(target_os = "macos")]
-    match delete_generic_password(TRANSCRIPTION_KEYCHAIN_SERVICE, &provider) {
-        Ok(()) => {}
-        Err(error) if error.code() == -25_300 => {}
-        Err(error) => return Err(format!("could not delete API key from Keychain: {error}")),
-    }
-    #[cfg(not(target_os = "macos"))]
-    return Err("secure API-key storage is available on macOS".into());
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    credentials::delete(&provider)?;
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    return Err("secure API-key storage is available on macOS and Windows".into());
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     transcription_key_status()
 }
 
 fn transcription_key_status() -> Result<TranscriptionKeyStatus, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         Ok(TranscriptionKeyStatus {
             deepgram: transcription_key_exists("deepgram")?,
             assembly_ai: transcription_key_exists("assemblyAi")?,
         })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     Ok(TranscriptionKeyStatus {
         deepgram: false,
         assembly_ai: false,
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn transcription_key_exists(provider: &str) -> Result<bool, String> {
-    match get_generic_password(TRANSCRIPTION_KEYCHAIN_SERVICE, provider) {
-        Ok(_) => Ok(true),
-        Err(error) if error.code() == -25_300 => Ok(false),
-        Err(error) => Err(format!(
-            "could not read API-key status from Keychain: {error}"
-        )),
-    }
+    Ok(credentials::get(provider)?.is_some())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn transcription_api_key(provider: &str) -> Result<String, String> {
     let bytes =
-        get_generic_password(TRANSCRIPTION_KEYCHAIN_SERVICE, provider).map_err(|error| {
-            if error.code() == -25_300 {
-                missing_transcription_key_message(provider)
-            } else {
-                format!("could not read API key from Keychain: {error}")
-            }
-        })?;
+        credentials::get(provider)?.ok_or_else(|| missing_transcription_key_message(provider))?;
     String::from_utf8(bytes).map_err(|_| "stored API key is not valid UTF-8".into())
 }
 
@@ -598,9 +574,9 @@ fn transcription_api_key(provider: &str) -> Result<String, String> {
 fn ensure_transcription_ready(mode: ServiceMode, provider: &str) -> Result<(), String> {
     match mode {
         ServiceMode::Managed => managed::ensure_signed_in(),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         ServiceMode::Byok => transcription_api_key(provider).map(|_| ()),
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         ServiceMode::Byok => {
             let _ = provider;
             Ok(())
@@ -608,7 +584,7 @@ fn ensure_transcription_ready(mode: ServiceMode, provider: &str) -> Result<(), S
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn missing_transcription_key_message(provider: &str) -> String {
     let provider = match provider {
         "deepgram" => "Deepgram",
@@ -634,29 +610,36 @@ async fn managed_billing(
         .map_err(|e| e.to_string())
 }
 
-/// Opens the relevant macOS privacy pane without requesting capture.
+/// Opens the relevant system audio or microphone settings without requesting capture.
 #[tauri::command]
 fn open_audio_settings(app: AppHandle, system: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let pane = if system {
+        "ms-settings:sound"
+    } else {
+        "ms-settings:privacy-microphone"
+    }
+    .to_owned();
+    #[cfg(not(target_os = "windows"))]
     let pane = if system {
         "Privacy_ScreenCapture"
     } else {
         "Privacy_Microphone"
     };
+    #[cfg(not(target_os = "windows"))]
+    let pane = format!("x-apple.systempreferences:com.apple.preference.security?{pane}");
     app.opener()
-        .open_url(
-            format!("x-apple.systempreferences:com.apple.preference.security?{pane}"),
-            None::<&str>,
-        )
+        .open_url(pane, None::<&str>)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 fn audio_check_stop(id: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         audio_check::stop(&id)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = id;
         Ok(())
@@ -669,8 +652,9 @@ async fn audio_check_start(
     transcribe: bool,
     id: String,
 ) -> Result<String, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
+        #[cfg(target_os = "macos")]
         if !tauri_plugin_macos_permissions::check_microphone_permission().await {
             return Err("Allow Savvy microphone access in System Settings > Privacy & Security > Microphone, then quit and reopen Savvy before checking audio again.".into());
         }
@@ -701,10 +685,10 @@ async fn audio_check_start(
             Uuid::parse_str(&id).map_err(|_| "invalid audio check ID")?,
         )
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (app, state, transcribe, id);
-        Err("Audio checks require macOS.".into())
+        Err("Audio checks require macOS or Windows.".into())
     }
 }
 
@@ -787,27 +771,27 @@ async fn probe_system_audio_permission() -> Result<(), String> {
 
 #[tauri::command]
 async fn get_input_devices() -> Result<Vec<AudioDevice>, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         tauri::async_runtime::spawn_blocking(input_devices)
             .await
             .map_err(|error| error.to_string())?
             .map_err(|error| error.to_string())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     Ok(Vec::new())
 }
 
 #[tauri::command]
 async fn get_output_devices() -> Result<Vec<AudioDevice>, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         tauri::async_runtime::spawn_blocking(output_devices)
             .await
             .map_err(|error| error.to_string())?
             .map_err(|error| error.to_string())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     Ok(Vec::new())
 }
 
@@ -827,7 +811,7 @@ fn update_settings(
         .lock()
         .map_err(|_| "settings lock poisoned")?
         .clone();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if (settings.service_mode != previous.service_mode
         || settings.microphone_only != previous.microphone_only)
         && audio_check::active()
@@ -873,7 +857,7 @@ fn update_settings(
         .settings
         .lock()
         .map_err(|_| "settings lock poisoned")? = settings.clone();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     tray::update_shortcut_label(app, &settings.start_listening_shortcut);
     if let Err(error) = app.emit("savvy://settings-changed", &settings) {
         log::warn!("could not notify windows of saved settings: {error}");
@@ -887,7 +871,7 @@ fn apply_runtime_settings(
     current: &AppSettings,
     next: &AppSettings,
 ) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if next.selected_microphone != current.selected_microphone
         || next.selected_channel != current.selected_channel
     {
@@ -896,6 +880,23 @@ fn apply_runtime_settings(
             .lock()
             .map_err(|_| "microphone lock poisoned")?
             .configure(next.selected_microphone.clone(), next.selected_channel)
+            .map_err(|error| error.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    if next.selected_system_output_device != current.selected_system_output_device {
+        if _state
+            .live_meeting
+            .lock()
+            .map_err(|_| "meeting lock poisoned")?
+            .is_some()
+        {
+            return Err("Stop the meeting before changing system audio output.".into());
+        }
+        _state
+            .system_audio
+            .lock()
+            .map_err(|_| "system audio lock poisoned")?
+            .configure(next.selected_system_output_device.clone())
             .map_err(|error| error.to_string())?;
     }
     if next.theme != current.theme {
@@ -908,7 +909,7 @@ fn apply_runtime_settings(
             &next.start_listening_shortcut,
         )?;
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if next.launch_on_startup != current.launch_on_startup {
         let result = if next.launch_on_startup {
             app.autolaunch().enable()
@@ -917,7 +918,7 @@ fn apply_runtime_settings(
         };
         result.map_err(|error| format!("could not update launch on startup: {error}"))?;
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if next.show_tray_icon != current.show_tray_icon {
         tray::set_visible(app, next.show_tray_icon)?;
     }
@@ -949,7 +950,7 @@ fn set_shortcut_recording(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         let raw = state
             .settings
@@ -971,7 +972,7 @@ fn set_shortcut_recording(
         }
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (active, app, state);
         Ok(())
@@ -984,7 +985,7 @@ fn set_overlay_expanded(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         let settings = state
             .settings
@@ -993,7 +994,7 @@ fn set_overlay_expanded(
             .clone();
         overlay::set_expanded(&app, &settings, expanded);
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = (expanded, app, state);
     Ok(())
 }
@@ -1094,14 +1095,14 @@ fn validate_shortcut(raw: &str) -> Result<(), String> {
     {
         return Err("shortcut must contain a modifier and a main key".into());
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     raw.parse::<Shortcut>()
         .map(|_| ())
         .map_err(|error| format!("invalid shortcut: {error}"))?;
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn register_start_shortcut(app: &AppHandle, raw: &str) -> Result<(), String> {
     let shortcut = raw
         .parse::<Shortcut>()
@@ -1119,7 +1120,7 @@ fn register_start_shortcut(app: &AppHandle, raw: &str) -> Result<(), String> {
         .map_err(|error| format!("could not register shortcut: {error}"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn replace_start_shortcut(app: &AppHandle, old: &str, new: &str) -> Result<(), String> {
     validate_shortcut(new)?;
     if let Ok(shortcut) = old.parse::<Shortcut>() {
@@ -1132,7 +1133,7 @@ fn replace_start_shortcut(app: &AppHandle, old: &str, new: &str) -> Result<(), S
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn replace_start_shortcut(_app: &AppHandle, _old: &str, _new: &str) -> Result<(), String> {
     Ok(())
 }
@@ -2040,7 +2041,7 @@ fn validate_brief_prompt(prompt: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn generate_brief_from_sources(
     client: Option<ClientWorkspace>,
     standalone_directory: PathBuf,
@@ -2179,7 +2180,7 @@ fn save_generated_document(brief: &mut NegotiationBrief, directory: &Path) -> Re
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn generate_brief_from_sources(
     _client: Option<ClientWorkspace>,
     _standalone_directory: PathBuf,
@@ -2191,7 +2192,7 @@ fn generate_brief_from_sources(
     Err("reasoning-provider brief generation is available on macOS".into())
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn collect_brief_evidence(
     root: &Path,
     client_id: Uuid,
@@ -2201,7 +2202,7 @@ fn collect_brief_evidence(
     collect_brief_evidence_for_job(root, client_id, max_chars, excluded_paths, None)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn collect_brief_evidence_for_job(
     root: &Path,
     client_id: Uuid,
@@ -2298,12 +2299,12 @@ fn is_generated_brief(path: &Path) -> bool {
         })
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn take_chars(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn brief_wire_request(
     client_name: &str,
     instructions: &str,
@@ -2329,7 +2330,7 @@ fn brief_wire_request(
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn map_generated_brief(
     generated: GeneratedBrief,
     client_id: Option<Uuid>,
@@ -2461,7 +2462,7 @@ fn imported_brief(
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn clean_strings(values: Vec<String>) -> Vec<String> {
     values
         .into_iter()
@@ -2749,7 +2750,7 @@ fn start_meeting_inner(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<MeetingSession, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if audio_check::active() {
         return Err("Stop the audio check before starting a meeting.".into());
     }
@@ -2815,7 +2816,7 @@ fn start_meeting_inner(
         context_pack_hash: context_pack.hash.clone(),
         source_index_revision: context_pack.source_revision.clone(),
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let session = {
         let path = recordings_directory(state)?.join(format!("{}.wav", session.id));
         let mut microphone = state
@@ -2827,20 +2828,26 @@ fn start_meeting_inner(
             .map_err(|error| error.to_string())?;
         microphone
             .start()
-            .map_err(|error| format!("Savvy could not start the microphone: {error}"))?;
+            .map_err(|error| {
+                if cfg!(target_os = "windows") {
+                    format!("Savvy could not start the microphone: {error}. Check the selected device and enable microphone access for desktop apps in Windows Settings > Privacy & security > Microphone.")
+                } else {
+                    format!("Savvy could not start the microphone: {error}")
+                }
+            })?;
         MeetingSession {
             audio_path: Some(path),
             ..session
         }
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     log::info!("microphone capture started");
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     play_configured_feedback(state, true);
     {
         let storage = state.storage.lock().map_err(|_| "storage lock poisoned")?;
         if let Err(error) = storage.save_session(&session) {
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let Ok(mut microphone) = state.microphone.lock() {
                 let _ = microphone.stop();
             }
@@ -2865,7 +2872,7 @@ fn start_meeting_inner(
         scan_turn_ids: Vec::new(),
         scan_accelerated: false,
         provider_warning_sent: false,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         started_monotonic: std::time::Instant::now(),
         brief,
     };
@@ -2873,9 +2880,9 @@ fn start_meeting_inner(
         .live_meeting
         .lock()
         .map_err(|_| "meeting lock poisoned")? = Some(live);
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     prepare_providers(app, state, session.id);
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if let Err(error) = start_transcription_worker(app, state, session.id) {
         log::error!("live transcription unavailable: {error}");
         if managed_mode(state) {
@@ -2890,7 +2897,7 @@ fn start_meeting_inner(
             format!("Live transcription unavailable: {error}"),
         );
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         let settings = state
             .settings
@@ -3069,7 +3076,7 @@ fn sha256(value: &str) -> String {
 }
 
 fn general_guidelines_brief(settings: &AppSettings) -> NegotiationBrief {
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     let document_content = settings
         .guidance_folder
         .as_deref()
@@ -3095,7 +3102,7 @@ fn general_guidelines_brief(settings: &AppSettings) -> NegotiationBrief {
             .ok()
         })
         .unwrap_or_default();
-    #[cfg(not(any(target_os = "macos", test)))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", test)))]
     let document_content = String::new();
 
     NegotiationBrief {
@@ -3240,11 +3247,11 @@ fn process_transcript_turn_inner(
         },
     );
     let recommendation = seed.as_ref().and_then(|seed| seed.local.clone());
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if let Some(seed) = seed {
         dispatch_generation(app.clone(), state, seed)?;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = seed;
     Ok(TranscriptUpdate {
         turn,
@@ -3307,7 +3314,7 @@ fn generation_seed(
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn scan_is_due(live: &LiveMeeting, now_ms: u64) -> bool {
     let since_last_scan = now_ms.saturating_sub(live.last_scan_ms);
     live.session.state == MeetingState::Recording
@@ -3319,7 +3326,7 @@ fn scan_is_due(live: &LiveMeeting, now_ms: u64) -> bool {
             || since_last_scan >= SCAN_MAX_WAIT_MS)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn maybe_dispatch_scan(app: &AppHandle, session_id: Uuid) -> Result<(), String> {
     let seed = {
         let state = app.state::<AppState>();
@@ -3347,7 +3354,7 @@ fn maybe_dispatch_scan(app: &AppHandle, session_id: Uuid) -> Result<(), String> 
     dispatch_generation(app.clone(), &state, seed)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn prepare_generation(state: &AppState, seed: GenerationSeed) -> Result<PendingGeneration, String> {
     if !state
         .live_meeting
@@ -3427,7 +3434,7 @@ fn prepare_generation(state: &AppState, seed: GenerationSeed) -> Result<PendingG
     })
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn retrieve_snapshot_evidence(
     context_pack: &ContextPack,
     query: &str,
@@ -3465,7 +3472,7 @@ fn retrieve_snapshot_evidence(
         .collect()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn dispatch_generation(
     app: AppHandle,
     state: &AppState,
@@ -3580,7 +3587,7 @@ fn dispatch_generation(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn skip_generation_without_provider(
     app: &AppHandle,
     state: &AppState,
@@ -3614,11 +3621,11 @@ fn skip_generation_without_provider(
 }
 
 enum GenerationOutcome {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     Completed(Box<Recommendation>),
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     Skipped,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     Failed(String),
     Cancelled,
 }
@@ -3632,7 +3639,7 @@ fn terminal_event(
     let generation_id = token.generation_id;
     let transcript_revision = token.transcript_revision;
     match outcome {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         GenerationOutcome::Completed(recommendation) => {
             savvy_domain::MeetingEvent::RecommendationCompleted {
                 session_id,
@@ -3642,14 +3649,14 @@ fn terminal_event(
                 recommendation: *recommendation,
             }
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         GenerationOutcome::Skipped => savvy_domain::MeetingEvent::RecommendationSkipped {
             session_id,
             sequence,
             generation_id,
             transcript_revision,
         },
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         GenerationOutcome::Failed(message) => savvy_domain::MeetingEvent::RecommendationFailed {
             session_id,
             sequence,
@@ -3686,7 +3693,7 @@ fn cancel_active_generation(app: &AppHandle, live: &mut LiveMeeting) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn fail_generation(
     app: &AppHandle,
     state: &AppState,
@@ -3758,14 +3765,23 @@ fn request_recommendation(
             turn.end_ms,
         )
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     dispatch_generation(app, &state, seed)?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = (app, seed);
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn system_audio_help() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Choose the playback device used by your meeting app in Savvy Settings > General > System Audio Output, then restart the meeting."
+    } else {
+        "Allow Savvy in System Settings > Privacy & Security > Screen & System Audio Recording, then restart Savvy."
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn start_transcription_worker(
     app: &AppHandle,
     state: &AppState,
@@ -3816,7 +3832,8 @@ fn start_transcription_worker(
                 let _ = app.emit(
                     "meeting://provider-error",
                     format!(
-                        "System audio unavailable; your microphone still works: {error}. Allow Savvy in System Settings > Privacy & Security > Screen & System Audio Recording, then restart Savvy."
+                        "System audio unavailable; your microphone still works: {error}. {}",
+                        system_audio_help()
                     ),
                 );
                 None
@@ -3873,7 +3890,7 @@ fn start_transcription_worker(
 /// Assembles provider events into turns, reconciles the two sources, and
 /// dispatches opportunity scans. Shared by the BYOK and managed paths: the
 /// transport differs, the downstream meeting logic must not.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn spawn_transcript_assembly(
     app: AppHandle,
     session_id: Uuid,
@@ -3907,7 +3924,7 @@ fn spawn_transcript_assembly(
 }
 
 // Called on the command blocking worker, without capture/storage/meeting locks.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn drain_transcript_assembly(state: &AppState) -> Result<(), String> {
     let assembly = state
         .transcription_assembly
@@ -3923,7 +3940,7 @@ fn drain_transcript_assembly(state: &AppState) -> Result<(), String> {
 /// Managed transcription streams through the Savvy relay. The hosted session
 /// is created first, so an ineligible account is refused before any capture
 /// starts, then both sources stream to the relay under the same session.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn start_managed_transcription_worker(
     app: &AppHandle,
     state: &AppState,
@@ -4011,7 +4028,7 @@ fn start_managed_transcription_worker(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 struct ManagedStream {
     session_id: Uuid,
     language: String,
@@ -4020,7 +4037,7 @@ struct ManagedStream {
 /// Reconnects on failure like the BYOK path, but always under the same hosted
 /// session, so a dropped connection never opens a second billable stream.
 /// A quota or authorization refusal stops retrying and surfaces once.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn spawn_managed_stream(
     app: AppHandle,
     stream: ManagedStream,
@@ -4163,7 +4180,7 @@ fn spawn_managed_stream(
     });
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn finish_managed_failure(app: AppHandle, id: Uuid, message: &str) {
     if message.contains("session_ended") {
         tauri::async_runtime::spawn_blocking(move || {
@@ -4174,7 +4191,7 @@ fn finish_managed_failure(app: AppHandle, id: Uuid, message: &str) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn pause_managed_assistance(app: AppHandle, id: Uuid) {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
@@ -4194,7 +4211,7 @@ fn pause_managed_assistance(app: AppHandle, id: Uuid) {
 
 /// Quota, authorization, and session conflicts are decisions, not outages:
 /// retrying cannot fix them and would keep asking the service for paid work.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn is_terminal_managed_failure(message: &str) -> bool {
     [
         "quota_exhausted",
@@ -4228,7 +4245,7 @@ fn managed_stream_message(message: &str, label: &str) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn process_reconciled_transcript(
     app: &AppHandle,
     session_id: Uuid,
@@ -4252,7 +4269,7 @@ fn process_reconciled_transcript(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[allow(clippy::too_many_arguments)]
 fn spawn_transcription_stream(
     app: AppHandle,
@@ -4306,7 +4323,7 @@ fn spawn_transcription_stream(
     });
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn meeting_state(app: &AppHandle, session_id: Uuid) -> Option<MeetingState> {
     app.state::<AppState>()
         .live_meeting
@@ -4320,7 +4337,7 @@ fn meeting_state(app: &AppHandle, session_id: Uuid) -> Option<MeetingState> {
         })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn transcript_turn(
     app: &AppHandle,
     session_id: Uuid,
@@ -4354,7 +4371,7 @@ fn transcript_turn(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn emit_interim_transcript(app: &AppHandle, session_id: Uuid, transcript: LiveTranscript) {
     let turn = transcript_turn(app, session_id, transcript, false);
     let sequence = app
@@ -4433,7 +4450,7 @@ fn set_meeting_listening(
     }
     if !listening {
         cancel_active_generation(app, live);
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         cancel_reasoning(state);
         // Close both transports so buffered tails cannot enter a later resume.
         #[cfg(target_os = "macos")]
@@ -4448,17 +4465,17 @@ fn set_meeting_listening(
     // Acquire every fallible lock before starting capture. Keep these guards
     // through persistence and rollback, so rollback cannot fail to reacquire one.
     let storage = state.storage.lock().map_err(|_| "storage lock poisoned")?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let mut microphone = state
         .microphone
         .lock()
         .map_err(|_| "microphone lock poisoned")?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let mut system_audio = state
         .system_audio
         .lock()
         .map_err(|_| "system audio lock poisoned")?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let microphone_only = state
         .settings
         .lock()
@@ -4468,7 +4485,7 @@ fn set_meeting_listening(
         &mut live.session,
         listening,
         |enabled| {
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             {
                 if enabled {
                     microphone.resume().map_err(|error| error.to_string())?;
@@ -4495,7 +4512,7 @@ fn set_meeting_listening(
                     }
                 }
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             let _ = enabled;
             Ok(())
         },
@@ -4507,13 +4524,13 @@ fn set_meeting_listening(
     );
     let session = live.session.clone();
     drop(storage);
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         drop(microphone);
         drop(system_audio);
     }
     drop(guard);
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if !listening {
         drain_transcript_assembly(state)?;
     }
@@ -4658,6 +4675,8 @@ pub(crate) fn quit(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         stop_active_meeting(&app);
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        shutdown_providers(&app.state::<AppState>());
         app.exit(0);
     });
 }
@@ -4716,42 +4735,42 @@ fn stop_live_meeting(
             cancel_active_generation(app, live);
             live.coordinator.stop();
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         cancel_reasoning(state);
         let live = guard.as_mut().expect("active meeting was checked");
         live.session.state = MeetingState::Completed;
         live.session.ended_at.get_or_insert_with(Utc::now);
         live.session.clone()
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if let Ok(mut stop) = state.transcription_stop.lock() {
         if let Some(stop) = stop.take() {
             let _ = stop.send(true);
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let recording_error = state
         .microphone
         .lock()
         .map_err(|_| "microphone lock poisoned")?
         .stop()
         .err();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let system_audio_error = state
         .system_audio
         .lock()
         .map_err(|_| "system audio lock poisoned")?
         .stop()
         .err();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if let Some(error) = recording_error {
         let _ = app.emit("meeting://capture-error", error.to_string());
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if let Some(error) = system_audio_error {
         let _ = app.emit("meeting://capture-error", error.to_string());
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     drain_transcript_assembly(state)?;
     if session
         .audio_path
@@ -4760,7 +4779,7 @@ fn stop_live_meeting(
     {
         session.audio_path = None;
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     play_configured_feedback(state, false);
     let _ = app.emit("meeting://stopped", session_id);
     {
@@ -4786,7 +4805,7 @@ fn stop_live_meeting(
             },
         )?;
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     overlay::hide(app);
     if let Err(error) = write_meeting_transcript(state, session.id) {
         log::warn!("meeting transcript file could not be written: {error}");
@@ -4798,7 +4817,7 @@ fn stop_live_meeting(
     Ok(session)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn cancel_reasoning(state: &AppState) {
     if managed_mode(state) {
         let keys = managed::active_request_keys();
@@ -4819,17 +4838,32 @@ fn cancel_reasoning(state: &AppState) {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn shutdown_providers(state: &AppState) {
+    cancel_reasoning(state);
+    if let Ok(mut slot) = state.codex_server.lock() {
+        if let Some(server) = slot.take() {
+            if let Ok(mut child) = server.child.lock() {
+                provider_process::terminate(&mut child);
+            }
+        }
+    }
+}
+
 #[tauri::command]
 fn get_audio_level(state: State<'_, AppState>) -> Result<f32, String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        match state.system_audio.try_lock() {
-            Ok(system) => {
-                system.level().map_err(|error| error.to_string())?;
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {}
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                return Err("system audio lock poisoned".into())
+        #[cfg(target_os = "macos")]
+        {
+            match state.system_audio.try_lock() {
+                Ok(system) => {
+                    system.level().map_err(|error| error.to_string())?;
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {}
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err("system audio lock poisoned".into())
+                }
             }
         }
         match state.microphone.try_lock() {
@@ -4838,19 +4872,19 @@ fn get_audio_level(state: State<'_, AppState>) -> Result<f32, String> {
             Err(std::sync::TryLockError::Poisoned(_)) => Err("microphone lock poisoned".into()),
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = state;
         Ok(0.0)
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl CodexAppServer {
     fn start() -> Result<std::sync::Arc<Self>, String> {
         use std::process::Stdio;
 
-        let binary = find_cli_binary("codex")?;
+        let binary = provider_process::find("codex")?;
         let temp_dir =
             std::env::temp_dir().join(format!("savvy-codex-app-server-{}", Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).map_err(|error| error.to_string())?;
@@ -5168,7 +5202,7 @@ impl CodexAppServer {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 impl Drop for CodexAppServer {
     fn drop(&mut self) {
         if let Ok(child) = self.child.get_mut() {
@@ -5179,7 +5213,7 @@ impl Drop for CodexAppServer {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn codex_server(app: &AppHandle) -> Result<std::sync::Arc<CodexAppServer>, String> {
     let state = app.state::<AppState>();
     let mut server = state
@@ -5194,7 +5228,7 @@ fn codex_server(app: &AppHandle) -> Result<std::sync::Arc<CodexAppServer>, Strin
     Ok(started)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn prepare_providers(app: &AppHandle, state: &AppState, session_id: Uuid) {
     let settings = state.settings.lock().ok().map(|settings| settings.clone());
     if settings
@@ -5231,7 +5265,7 @@ fn prepare_providers(app: &AppHandle, state: &AppState, session_id: Uuid) {
     });
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn spawn_provider_enhancement(app: AppHandle, pending: PendingGeneration, provider: String) {
     {
         let state = app.state::<AppState>();
@@ -5296,7 +5330,7 @@ fn spawn_provider_enhancement(app: AppHandle, pending: PendingGeneration, provid
     });
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 async fn run_provider_enhancement(app: AppHandle, pending: PendingGeneration, provider: String) {
     let settings = app
         .state::<AppState>()
@@ -5473,7 +5507,7 @@ async fn run_provider_enhancement(app: AppHandle, pending: PendingGeneration, pr
     log::debug!("reasoning enhancement finished provider={provider_label}");
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn generate_provider_recommendation(
     pending: PendingGeneration,
     provider: &str,
@@ -5559,7 +5593,7 @@ fn generate_provider_recommendation(
 }
 
 /// The model has started answering: reading the notes is over, composing has begun.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn emit_thinking_phase(app: &AppHandle, token: GenerationToken) {
     let sequence = app
         .state::<AppState>()
@@ -5585,12 +5619,12 @@ fn emit_thinking_phase(app: &AppHandle, token: GenerationToken) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn build_recommendation_prompt(request: &RecommendationRequest) -> Result<String, String> {
     savvy_providers::build_recommendation_prompt(&request.to_wire())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn resolve_provider_advice(
     recommendation_id: Uuid,
     request: RecommendationRequest,
@@ -5704,7 +5738,7 @@ fn resolve_provider_advice(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run_provider_json<T: DeserializeOwned>(
     provider: &str,
     prompt: &str,
@@ -5719,7 +5753,7 @@ fn run_provider_json<T: DeserializeOwned>(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run_codex_json<T: DeserializeOwned>(
     prompt: &str,
     model: &str,
@@ -5742,8 +5776,8 @@ fn run_codex_json<T: DeserializeOwned>(
     write_private_file(&schema_path, schema.as_bytes()).map_err(|error| error.to_string())?;
 
     let run = (|| {
-        let binary = find_cli_binary("codex")?;
-        let mut command = std::process::Command::new(binary);
+        let binary = provider_process::find("codex")?;
+        let mut command = provider_process::command(binary)?;
         let reasoning_config = format!("model_reasoning_effort=\"{reasoning_effort}\"");
         command.args([
             "exec",
@@ -5798,7 +5832,7 @@ fn run_codex_json<T: DeserializeOwned>(
     run
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run_claude_json<T: DeserializeOwned>(
     prompt: &str,
     model: &str,
@@ -5817,7 +5851,7 @@ fn run_claude_json<T: DeserializeOwned>(
     let output_path =
         std::env::temp_dir().join(format!("savvy-claude-{}.output.json", Uuid::new_v4()));
     let run = (|| {
-        let binary = find_cli_binary("claude")?;
+        let binary = provider_process::find("claude")?;
         let resolved_model = if context_window == "1m" {
             format!("{model}[1m]")
         } else {
@@ -5866,10 +5900,10 @@ fn run_claude_json<T: DeserializeOwned>(
     run
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 type ClaudeChildSlot = Mutex<Option<std::sync::Arc<Mutex<tokio::process::Child>>>>;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run_claude_child(
     mut command: tokio::process::Command,
     prompt: &str,
@@ -5976,7 +6010,7 @@ fn run_claude_child(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run_claude_live_json<T: DeserializeOwned>(
     prompt: &str,
     model: &str,
@@ -6003,7 +6037,7 @@ fn run_claude_live_json<T: DeserializeOwned>(
     create_private_directory(&directory).map_err(|error| error.to_string())?;
     let output_path = directory.join("output.json");
     let run = (|| {
-        let binary = find_cli_binary("claude")?;
+        let binary = provider_process::find("claude")?;
         let resolved_model = if context_window == "1m" {
             format!("{model}[1m]")
         } else {
@@ -6052,7 +6086,7 @@ fn run_claude_live_json<T: DeserializeOwned>(
     run
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run_provider_process(
     mut command: std::process::Command,
     prompt: &str,
@@ -6127,7 +6161,7 @@ fn run_provider_process(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn play_configured_feedback(state: &AppState, started: bool) {
     if let Ok(settings) = state.settings.lock() {
         if settings.audio_feedback {
@@ -6138,30 +6172,6 @@ fn play_configured_feedback(state: &AppState, started: bool) {
             );
         }
     }
-}
-
-#[cfg(target_os = "macos")]
-fn find_cli_binary(name: &str) -> Result<PathBuf, String> {
-    use std::process::Command;
-
-    if let Some(home) = std::env::var_os("HOME") {
-        let official = PathBuf::from(home).join(".local/bin").join(name);
-        if official.is_file() {
-            return Ok(official);
-        }
-    }
-
-    let output = Command::new("/bin/zsh")
-        .args(["-lc", &format!("command -v {name}")])
-        .output()
-        .map_err(|error| format!("could not locate {name}: {error}"))?;
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .rev()
-        .map(str::trim)
-        .map(PathBuf::from)
-        .find(|path| path.is_file())
-        .ok_or_else(|| format!("{name} is not installed or not on PATH"))
 }
 
 /// Startup check: silent unless an update exists. A missing endpoint, no network, or no
@@ -6229,6 +6239,8 @@ fn cancel_relaunch(app: &AppHandle) {
 }
 
 fn finish_relaunch(app: &AppHandle) -> Result<(), String> {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    shutdown_providers(&app.state::<AppState>());
     #[cfg(target_os = "macos")]
     {
         relaunch::schedule(app)?;
@@ -6262,7 +6274,7 @@ fn offer_update(app: tauri::AppHandle, update: tauri_plugin_updater::Update) {
             "Later".into(),
         ))
         // Installing from inside the callback keeps the whole flow on the async
-        // runtime without a channel; `tokio` is a macOS-only dependency here.
+        // runtime without a channel.
         .show(move |accepted| {
             if !accepted {
                 return;
@@ -6295,7 +6307,10 @@ fn offer_update(app: tauri::AppHandle, update: tauri_plugin_updater::Update) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|_, _, _| {}));
+    let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
@@ -6317,8 +6332,9 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder
         .plugin(tauri_nspanel::init())
-        .plugin(tauri_plugin_macos_permissions::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build());
+        .plugin(tauri_plugin_macos_permissions::init());
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
     let app = builder
         .setup(|app| {
             managed::start_revocation_worker();
@@ -6371,7 +6387,7 @@ pub fn run() {
                 ServiceMode::Managed => Vec::new(),
                 ServiceMode::Byok => recommendation_provider_status(),
             };
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let Ok(provider) =
                 choose_healthy_provider(&settings.recommendation_provider, &provider_health)
             {
@@ -6404,13 +6420,19 @@ pub fn run() {
             if let Err(error) = storage.compact() {
                 log::warn!("storage compaction failed: {error}");
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             let mut microphone = MicrophoneCapture::new();
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             microphone.configure(
                 settings.selected_microphone.clone(),
                 settings.selected_channel,
             )?;
+            #[cfg(target_os = "windows")]
+            let system_audio = {
+                let mut capture = SystemAudioCapture::new();
+                capture.configure(settings.selected_system_output_device.clone())?;
+                capture
+            };
             app.manage(AppState {
                 storage: Mutex::new(storage),
                 live_meeting: Mutex::new(None),
@@ -6418,20 +6440,22 @@ pub fn run() {
                 app_operation: Mutex::new(false),
                 settings_path,
                 provider_health: Mutex::new(provider_health),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 microphone: Mutex::new(microphone),
                 #[cfg(target_os = "macos")]
                 system_audio: Mutex::new(SystemAudioCapture::new()),
-                #[cfg(target_os = "macos")]
+                #[cfg(target_os = "windows")]
+                system_audio: Mutex::new(system_audio),
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 transcription_stop: Mutex::new(None),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 transcription_assembly: Mutex::new(None),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 codex_server: Mutex::new(None),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 claude_child: Mutex::new(None),
             });
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             {
                 log::info!("Savvy {} starting", app.package_info().version);
                 app.handle().plugin(tauri_plugin_autostart::init(
@@ -6446,7 +6470,9 @@ pub fn run() {
                 tray::setup(app, settings.show_tray_icon)?;
                 tray::update_shortcut_label(app.handle(), &settings.start_listening_shortcut);
                 overlay::create(app.handle(), &settings);
-                if settings.start_hidden {
+                if settings.start_hidden
+                    && (!cfg!(target_os = "windows") || settings.show_tray_icon)
+                {
                     if let Some(window) = app.get_webview_window("main") {
                         window.hide()?;
                     }
@@ -6647,7 +6673,7 @@ mod tests {
             scan_turn_ids,
             scan_accelerated: false,
             provider_warning_sent: false,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             started_monotonic: std::time::Instant::now(),
         }
     }
@@ -6783,7 +6809,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn superseded_codex_work_does_not_wait_for_the_running_request() {
         let lock = Mutex::new(());
@@ -6798,7 +6824,7 @@ mod tests {
         assert!(lock_current_run(&lock, &|| true).is_ok());
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn recommendation_worker_coalesces_bursts_and_restarts_after_drain() {
         let mut work = RecommendationWork::default();
@@ -6850,7 +6876,7 @@ mod tests {
         assert_eq!(work.next().unwrap().0.token.generation_id, 10_001);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn synthetic_opportunity_request(turn_texts: &[&str]) -> RecommendationRequest {
         let session_id = Uuid::new_v4();
         let recent_turns = turn_texts
@@ -6886,7 +6912,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     #[ignore = "requires authenticated Codex and Claude CLIs"]
     fn opportunity_providers_pass_show_skip_smoke() {
@@ -6973,7 +6999,7 @@ mod tests {
         .expect("valid generated brief")
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     #[ignore = "requires the installed authenticated Codex CLI"]
     fn codex_app_server_returns_structured_output() {
@@ -7387,8 +7413,12 @@ mod tests {
             guidance_folder: Some(root.to_string_lossy().into_owned()),
             ..AppSettings::default()
         });
-        assert!(brief.document_content.contains("raw/client.md"));
-        assert!(brief.document_content.contains("locator"));
+        let content: serde_json::Value = serde_json::from_str(&brief.document_content).unwrap();
+        assert_eq!(
+            serde_json::from_value::<PathBuf>(content[0]["relativePath"].clone()).unwrap(),
+            Path::new("raw/client.md")
+        );
+        assert!(content[0]["locator"].is_object());
         fs::remove_dir_all(root).expect("remove test folder");
     }
 
@@ -7736,7 +7766,7 @@ mod tests {
         assert!(!is_generated_brief(Path::new("client-notes.md")));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[test]
     fn recognizes_cli_auth_status_without_account_details() {
         assert!(auth_output_authenticated(
